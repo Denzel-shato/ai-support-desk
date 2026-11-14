@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { ArrowLeft } from "lucide-react";
 import { PriorityBadge } from "@/components/overview/priority-badge";
 import { StatusBadge } from "@/components/overview/status-badge";
@@ -11,6 +11,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useTicket } from "@/hooks/use-ticket";
 import { buildTicketDetail, type TicketDetailView } from "@/lib/ticket-detail";
+import type { SupportTicketRecord } from "@/lib/types";
+import { ResponseWorkspace } from "./response-workspace";
 import { TicketDetailError, TicketDetailSkeleton } from "./ticket-detail-states";
 
 /* -------------------------------------------------------------------------- */
@@ -87,7 +89,15 @@ function YesNo({ value }: { value: boolean | null }) {
 /*  Page content                                                              */
 /* -------------------------------------------------------------------------- */
 
-function TicketDetailBody({ t }: { t: TicketDetailView }) {
+function TicketDetailBody({
+  t,
+  ticket,
+  onTicketChange,
+}: {
+  t: TicketDetailView;
+  ticket: SupportTicketRecord;
+  onTicketChange: (ticket: SupportTicketRecord) => void;
+}) {
   const hasKb =
     t.kbStatus ||
     t.relevantSection ||
@@ -115,6 +125,8 @@ function TicketDetailBody({ t }: { t: TicketDetailView }) {
           <Section title="Customer message">
             <TextBlock value={t.message} />
           </Section>
+
+          <ResponseWorkspace ticket={ticket} onTicketChange={onTicketChange} />
 
           <Section title="AI analysis">
             <dl className="space-y-4">
@@ -156,26 +168,6 @@ function TicketDetailBody({ t }: { t: TicketDetailView }) {
             )}
           </Section>
 
-          <Section title="Responses">
-            <dl className="space-y-4">
-              <Field label="Customer response">
-                {t.customerResponse ? (
-                  <p className="whitespace-pre-wrap rounded-md border border-border bg-surface-muted px-3 py-2.5 text-[13px] leading-relaxed">
-                    {t.customerResponse}
-                  </p>
-                ) : (
-                  <NotRecorded />
-                )}
-              </Field>
-              {t.aiResponse && (
-                <Field label="AI response">
-                  <p className="whitespace-pre-wrap rounded-md border border-border bg-surface-muted px-3 py-2.5 text-[13px] leading-relaxed">
-                    {t.aiResponse}
-                  </p>
-                </Field>
-              )}
-            </dl>
-          </Section>
         </div>
 
         <div className="space-y-4">
@@ -247,7 +239,10 @@ function TicketDetailBody({ t }: { t: TicketDetailView }) {
 }
 
 function TicketDetailContent({ id }: { id: string }) {
-  const { ticket, error, loading, retrying, retry } = useTicket(id);
+  const { ticket: loaded, error, loading, retrying, retry } = useTicket(id);
+  // Newer copy returned by the review/send routes; wins over the first load.
+  const [override, setOverride] = useState<SupportTicketRecord | null>(null);
+  const ticket = override ?? loaded;
   const view = useMemo(() => (ticket ? buildTicketDetail(ticket) : null), [ticket]);
 
   return (
@@ -263,7 +258,9 @@ function TicketDetailContent({ id }: { id: string }) {
       {!loading && !view && error && (
         <TicketDetailError error={error} onRetry={retry} retrying={retrying} />
       )}
-      {view && <TicketDetailBody t={view} />}
+      {view && ticket && (
+        <TicketDetailBody t={view} ticket={ticket} onTicketChange={setOverride} />
+      )}
     </div>
   );
 }

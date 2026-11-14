@@ -18,7 +18,7 @@ export class TicketsTimeoutError extends Error {
   }
 }
 
-function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+export function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout>;
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(() => reject(new TicketsTimeoutError()), ms);
@@ -60,7 +60,7 @@ export class InvalidTicketIdError extends Error {
 }
 
 /** Firestore document ID rules: no "/", not "." or "..", not "__.*__", max 1500 bytes. */
-function isValidDocumentId(id: string): boolean {
+export function isValidDocumentId(id: string): boolean {
   return (
     id.length > 0 &&
     Buffer.byteLength(id, "utf8") <= 1500 &&

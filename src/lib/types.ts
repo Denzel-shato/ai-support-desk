@@ -48,7 +48,22 @@ export interface SupportTicketRecord {
   escalationStatus?: string | null;
   escalationReason?: string | null;
   escalatedAt?: string | null;
+  /** "awaiting_review" | "approved" | "rejected": the agent's decision. */
   reviewStatus?: string | null;
+
+  /* Response review and delivery (written by the dashboard and the n8n send
+     workflow; older tickets don't have these). `aiResponse` and
+     `customerResponse` are never modified by either. */
+  /** The agent's approved (or draft) reply: what gets emailed. */
+  finalResponse?: string | null;
+  /** "draft" | "queued" | "sent" | "failed": email delivery, separate from reviewStatus. */
+  responseStatus?: string | null;
+  responseSentAt?: string | null;
+  responseError?: string | null;
+  /** Idempotency key for the current send; reused across retries of the same text. */
+  responseSendId?: string | null;
+  /** When the current send was claimed; lets a stuck "queued" send be retried. */
+  responseQueuedAt?: string | null;
 }
 
 /** Error body returned by GET /api/tickets on any non-2xx response. */
