@@ -42,3 +42,45 @@ export async function listSupportTickets(): Promise<SupportTicketRecord[]> {
     .map((doc) => serializeTicket(doc.id, doc.data()))
     .sort(compareByCreatedAtDesc);
 }
+
+/** Thrown when no `support_tickets` document has the requested ID. */
+export class TicketNotFoundError extends Error {
+  constructor(readonly ticketId: string) {
+    super("Ticket not found.");
+    this.name = "TicketNotFoundError";
+  }
+}
+
+/** Thrown when an ID could never be a valid Firestore document ID. */
+export class InvalidTicketIdError extends Error {
+  constructor() {
+    super("That ticket ID is not valid.");
+    this.name = "InvalidTicketIdError";
+  }
+}
+
+/** Firestore document ID rules: no "/", not "." or "..", not "__.*__", max 1500 bytes. */
+function isValidDocumentId(id: string): boolean {
+  return (
+    id.length > 0 &&
+    Buffer.byteLength(id, "utf8") <= 1500 &&
+    !id.includes("/") &&
+    id !== "." &&
+    id !== ".." &&
+    !/^__.*__$/.test(id)
+  );
+}
+
+/** Reads one ticket by its Firestore document ID. */
+export async function getSupportTicket(
+  id: string,
+): Promise<SupportTicketRecord> {
+  if (!isValidDocumentId(id)) throw new InvalidTicketIdError();
+
+  const snapshot = await withTimeout(
+    getAdminDb().collection(TICKETS_COLLECTION).doc(id).get(),
+    QUERY_TIMEOUT_MS,
+  );
+  if (!snapshot.exists) throw new TicketNotFoundError(id);
+  return serializeTicket(snapshot.id, snapshot.data() ?? {});
+}

@@ -8,6 +8,8 @@ import type { ApiErrorBody, SupportTicketRecord } from "@/lib/types";
 export type TicketsErrorCode =
   | "network_error"
   | "invalid_response"
+  | "ticket_not_found"
+  | "invalid_ticket_id"
   | "firebase_not_configured"
   | "firestore_timeout"
   | "firestore_permission_denied"
@@ -48,12 +50,13 @@ function isApiErrorBody(value: unknown): value is ApiErrorBody {
   );
 }
 
-export async function fetchTickets(
+async function requestJson(
+  url: string,
   signal?: AbortSignal,
-): Promise<SupportTicketRecord[]> {
+): Promise<{ body: unknown; status: number }> {
   let response: Response;
   try {
-    response = await fetch("/api/tickets", { cache: "no-store", signal });
+    response = await fetch(url, { cache: "no-store", signal });
   } catch (error) {
     if (signal?.aborted) throw error; // let the caller ignore cancelled requests
     throw new TicketsApiError(
@@ -83,12 +86,40 @@ export async function fetchTickets(
     );
   }
 
+  return { body, status: response.status };
+}
+
+export async function fetchTickets(
+  signal?: AbortSignal,
+): Promise<SupportTicketRecord[]> {
+  const { body, status } = await requestJson("/api/tickets", signal);
+
   if (!Array.isArray(body)) {
     throw new TicketsApiError("The server returned data in an unexpected format.", {
       code: "invalid_response",
-      status: response.status,
+      status,
     });
   }
 
   return body as SupportTicketRecord[];
+}
+
+/** Fetches one ticket by Firestore document ID. 404s surface as `ticket_not_found`. */
+export async function fetchTicket(
+  id: string,
+  signal?: AbortSignal,
+): Promise<SupportTicketRecord> {
+  const { body, status } = await requestJson(
+    `/api/tickets/${encodeURIComponent(id)}`,
+    signal,
+  );
+
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    throw new TicketsApiError("The server returned data in an unexpected format.", {
+      code: "invalid_response",
+      status,
+    });
+  }
+
+  return body as SupportTicketRecord;
 }
