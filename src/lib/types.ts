@@ -101,7 +101,15 @@ export interface Ticket {
 }
 
 export interface Metric {
-  id: "total" | "open" | "escalated" | "awaiting_review";
+  id:
+    | "total"
+    | "open"
+    | "escalated"
+    | "awaiting_review"
+    | "escalations_total"
+    | "escalations_urgent"
+    | "escalations_high"
+    | "escalations_awaiting_attention";
   label: string;
   description: string;
   value: number;
