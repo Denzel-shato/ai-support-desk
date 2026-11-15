@@ -1,5 +1,24 @@
 # Changelog
 
+## Settings page
+
+Replaces the Settings placeholder with a read-only, honest status page. No schema change, no new dependency, no new environment variable, no new collection, no n8n change, no authentication.
+
+### What it shows
+- **Workspace**: app name and description, data store (Firestore project ID), and the fact that the dashboard has no sign-in.
+- **Integrations**: Firebase/Firestore (measured with count queries: ticket and article counts, latest ticket); the n8n ticket pipeline with Gemini and Gmail delivery (shown as handled by n8n: the dashboard cannot observe them); the n8n send-response webhook (Awaiting setup / Misconfigured / Configured, not verified; "Delivery confirmed before" only once a response has actually been recorded as sent). The webhook is never called by the status check, because that would send an email. URL and secret are shown only as Set or Not set.
+- **Notifications**: which emails exist and where each is controlled. No toggles: nothing in the architecture can honestly be switched from the dashboard, so none were added.
+- **Application**: version from `package.json`, environment, Next/React/Node versions, read limits.
+
+A **Re-check** button re-runs the measurements. Loading, error (with retry) and failed-refresh states are handled.
+
+### Added
+- `GET /api/settings/status` (read-only, no-store)
+- `src/lib/app-info.ts`, `settings-status.ts`, `system-status.ts`, `src/lib/api/settings.ts`
+- `src/hooks/use-settings-status.ts`, `src/components/settings/settings-page.tsx`
+### Modified
+- `src/app/(dashboard)/settings/page.tsx`
+
 ## Knowledge Base: edit, activate and deactivate
 
 Completes article management. Writes go through a server-side `PATCH /api/knowledge-base/[id]` to the existing `knowledge_base` collection. No schema change, no new dependency, no new environment variable, no n8n change. **Permanent deletion is intentionally not implemented**: there is no DELETE route or button (DELETE and PUT answer 405). Deactivating is the safe alternative.
