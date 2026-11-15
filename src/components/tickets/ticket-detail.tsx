@@ -10,8 +10,10 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { useTicket } from "@/hooks/use-ticket";
+import { approvalRequired } from "@/lib/response-workflow";
 import { buildTicketDetail, type TicketDetailView } from "@/lib/ticket-detail";
 import type { SupportTicketRecord } from "@/lib/types";
+import { CommunicationsPanel } from "./communications-panel";
 import { ResponseWorkspace } from "./response-workspace";
 import { TicketDetailError, TicketDetailSkeleton } from "./ticket-detail-states";
 
@@ -128,6 +130,8 @@ function TicketDetailBody({
 
           <ResponseWorkspace ticket={ticket} onTicketChange={onTicketChange} />
 
+          <CommunicationsPanel ticket={ticket} />
+
           <Section title="AI analysis">
             <dl className="space-y-4">
               <Field label="Summary">
@@ -227,8 +231,11 @@ function TicketDetailBody({
               {t.escalatedLabel && (
                 <Field label="Escalated at">{t.escalatedLabel}</Field>
               )}
-              {t.reviewStatus && (
-                <Field label="Review status">{t.reviewStatus}</Field>
+              {/* Low/Medium ignore any stored reviewStatus (n8n sets it on those too). */}
+              {!approvalRequired(t.priority) ? (
+                <Field label="Review status">Not required</Field>
+              ) : (
+                t.reviewStatus && <Field label="Review status">{t.reviewStatus}</Field>
               )}
             </dl>
           </Section>

@@ -1,5 +1,6 @@
 import "server-only";
 
+import type { FollowUpClaim } from "./communications";
 import {
   interpretWebhookResponse,
   ResponseWorkflowError,
@@ -72,12 +73,19 @@ export function readWebhookConfig(
 
 export interface WebhookPayload {
   ticketId: string;
+  /** "initial_response" (approved High/Urgent reply) or "follow_up". */
+  messageType: "initial_response" | "follow_up";
+  /** Set for follow-ups: the message document ID. */
+  messageId?: string;
   idempotencyKey: string;
   customerName: string | null;
   customerEmail: string;
   subject: string;
-  finalResponse: string;
-  ticket: SendClaim["context"];
+  /** The email text for BOTH types: point the Gmail node at this field. */
+  messageBody: string;
+  /** Initial responses only (same text as messageBody; kept for compatibility). */
+  finalResponse?: string;
+  ticket?: SendClaim["context"];
   requestedAt: string;
   source: "ai-support-desk";
 }
@@ -90,12 +98,34 @@ export function buildWebhookPayload(
 ): WebhookPayload {
   return {
     ticketId,
+    messageType: "initial_response",
     idempotencyKey: claim.idempotencyKey,
     customerName: claim.customerName,
     customerEmail: claim.recipient,
     subject: "Re: Your support request",
+    messageBody: claim.finalResponse,
     finalResponse: claim.finalResponse,
     ticket: claim.context,
+    requestedAt,
+    source: "ai-support-desk",
+  };
+}
+
+/** Payload for a follow-up. Recipient and text come from Firestore. */
+export function buildFollowUpPayload(
+  ticketId: string,
+  claim: FollowUpClaim,
+  requestedAt: string,
+): WebhookPayload {
+  return {
+    ticketId,
+    messageType: "follow_up",
+    messageId: claim.idempotencyKey,
+    idempotencyKey: claim.idempotencyKey,
+    customerName: claim.customerName,
+    customerEmail: claim.recipient,
+    subject: "Re: Your support request",
+    messageBody: claim.content,
     requestedAt,
     source: "ai-support-desk",
   };

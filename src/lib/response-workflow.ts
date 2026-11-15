@@ -1,3 +1,4 @@
+import { normalizePriority } from "./overview";
 import { formatDateTime } from "./ticket-detail";
 import { toIsoOrNull } from "./ticket-serialization";
 import type { SupportTicketRecord } from "./types";
@@ -73,6 +74,31 @@ export class ResponseWorkflowError extends Error {
 
 /** A Firestore document's data as stored (may contain Timestamps). */
 type RawDoc = Record<string, unknown>;
+
+/* -------------------------------------------------------------------------- */
+/*  Priority policy                                                           */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Whether the AI response needs a human decision before it can be emailed.
+ * Decided by PRIORITY only, never by the stored `reviewStatus` (the n8n
+ * normal-handling branch writes "awaiting_review" for Low and Medium tickets
+ * too). Low and Medium: no. High and Urgent: yes.
+ * A missing or unrecognised priority requires approval: the safe default.
+ */
+export function approvalRequired(priority: unknown): boolean {
+  const p = normalizePriority(priority);
+  return p !== "low" && p !== "medium";
+}
+
+export const NOT_REQUIRED_MESSAGE =
+  "Low and Medium tickets don't use approval. Use a follow-up message to write to the customer.";
+
+function assertApprovalApplies(raw: RawDoc): void {
+  if (!approvalRequired(raw.priority)) {
+    throw new ResponseWorkflowError(409, "approval_not_required", NOT_REQUIRED_MESSAGE);
+  }
+}
 
 /* -------------------------------------------------------------------------- */
 /*  Normalisation and validation                                              */
@@ -207,6 +233,8 @@ export function pickOriginalAiResponse(
 /* -------------------------------------------------------------------------- */
 
 export interface ResponseWorkspaceView {
+  /** False for Low/Medium: read-only AI response, no approve/reject/edit/send. */
+  approvalRequired: boolean;
   original: OriginalAiResponse;
   /** The stored `finalResponse` (trimmed), or null. */
   savedFinal: string | null;
@@ -233,6 +261,7 @@ export function buildResponseWorkspace(
   const sentAt = toIsoOrNull(t.responseSentAt);
 
   return {
+    approvalRequired: approvalRequired(t.priority),
     original,
     savedFinal,
     baseline: savedFinal ?? original.text ?? "",
@@ -255,6 +284,7 @@ export function sendBlockedReason(
   view: ResponseWorkspaceView,
   editorText: string,
 ): string | null {
+  if (!view.approvalRequired) return NOT_REQUIRED_MESSAGE;
   if (view.responseStatus === "sent") {
     return "This response has already been sent.";
   }
@@ -326,6 +356,7 @@ export function decideReviewUpdate(
   finalResponse: string | undefined,
   nowMs: number,
 ): Record<string, unknown> {
+  assertApprovalApplies(raw);
   const status = normalizeResponseStatus(raw.responseStatus);
   if (status === "sent") {
     throw new ResponseWorkflowError(
@@ -401,6 +432,7 @@ export function decideSendClaim(
   nowIso: string,
   newKey: () => string,
 ): SendClaim {
+  assertApprovalApplies(raw);
   const status = normalizeResponseStatus(raw.responseStatus);
 
   if (status === "sent") {

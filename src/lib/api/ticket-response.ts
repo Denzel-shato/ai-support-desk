@@ -1,4 +1,5 @@
 import { TicketsApiError } from "@/lib/api/tickets";
+import type { FollowUpMessage } from "@/lib/communications";
 import type { ReviewAction } from "@/lib/response-workflow";
 import type { ApiErrorBody, SupportTicketRecord } from "@/lib/types";
 
@@ -111,5 +112,87 @@ export async function sendResponse(id: string): Promise<SendResult> {
     ticket: ticketFrom(body),
     message: typeof obj.message === "string" ? obj.message : undefined,
     warning: typeof obj.warning === "string" ? obj.warning : undefined,
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Follow-ups and communication history                                      */
+/* -------------------------------------------------------------------------- */
+
+export async function fetchMessages(
+  id: string,
+  signal?: AbortSignal,
+): Promise<FollowUpMessage[]> {
+  let response: Response;
+  try {
+    response = await fetch(`/api/tickets/${encodeURIComponent(id)}/messages`, {
+      cache: "no-store",
+      signal,
+    });
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    throw new TicketsApiError(
+      "Couldn't reach the dashboard server. Check your connection and try again.",
+      { code: "network_error" },
+    );
+  }
+  let body: unknown = null;
+  try {
+    body = await response.json();
+  } catch {
+    body = null;
+  }
+  if (!response.ok) {
+    if (isApiErrorBody(body)) {
+      throw new TicketsApiError(body.error.message, {
+        code: body.error.code,
+        status: response.status,
+      });
+    }
+    throw new TicketsApiError(
+      `The server returned an unexpected error (HTTP ${response.status}).`,
+      { code: "unknown_error", status: response.status },
+    );
+  }
+  const list = (body as { messages?: unknown } | null)?.messages;
+  if (!Array.isArray(list)) {
+    throw new TicketsApiError("The server returned data in an unexpected format.", {
+      code: "invalid_response",
+      status: response.status,
+    });
+  }
+  return list as FollowUpMessage[];
+}
+
+export interface FollowUpResult {
+  result: "sent" | "queued";
+  warning?: string;
+  note?: string;
+}
+
+/**
+ * Sends a follow-up. `content` is only needed for a new message; retrying an
+ * existing one (same `messageId`) re-sends the stored text on the server.
+ */
+export async function sendFollowUp(
+  ticketId: string,
+  messageId: string,
+  content?: string,
+): Promise<FollowUpResult> {
+  const { body, status } = await post(
+    `/api/tickets/${encodeURIComponent(ticketId)}/followups`,
+    content === undefined ? { messageId } : { messageId, content },
+  );
+  const obj = (body ?? {}) as Record<string, unknown>;
+  if (obj.result !== "sent" && obj.result !== "queued") {
+    throw new TicketsApiError("The server returned data in an unexpected format.", {
+      code: "invalid_response",
+      status,
+    });
+  }
+  return {
+    result: obj.result,
+    warning: typeof obj.warning === "string" ? obj.warning : undefined,
+    note: typeof obj.note === "string" ? obj.note : undefined,
   };
 }

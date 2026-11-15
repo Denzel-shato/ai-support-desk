@@ -16,8 +16,14 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
 import { useResponseWorkspace } from "@/hooks/use-response-workspace";
-import { MAX_RESPONSE_LENGTH } from "@/lib/response-workflow";
-import type { ResponseStatus, ReviewStatus } from "@/lib/response-workflow";
+import {
+  approvalRequired,
+  buildResponseWorkspace,
+  MAX_RESPONSE_LENGTH,
+  type ResponseStatus,
+  type ResponseWorkspaceView,
+  type ReviewStatus,
+} from "@/lib/response-workflow";
 import type { SupportTicketRecord } from "@/lib/types";
 
 const REVIEW_PILL: Record<ReviewStatus | "none", { label: string; bg: string; fg: string }> = {
@@ -43,7 +49,90 @@ function Spinner() {
   return <Loader2 className="animate-spin" aria-hidden />;
 }
 
+/** Original AI response (and the other field, if different). Read-only. */
+function OriginalResponse({ view }: { view: ResponseWorkspaceView }) {
+  return (
+    <div>
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h3 className="text-xs font-medium text-muted-foreground">
+          Original AI response
+        </h3>
+        {view.original.source && (
+          <span className="text-[11px] text-subtle-foreground">
+            From <code>{view.original.source}</code> · read-only, always kept
+          </span>
+        )}
+      </div>
+      {view.original.text ? (
+        <p className="mt-1.5 whitespace-pre-wrap rounded-md border border-border bg-surface-muted px-3 py-2.5 text-[13px] leading-relaxed">
+          {view.original.text}
+        </p>
+      ) : (
+        <p className="mt-1.5 text-[13px] text-subtle-foreground">
+          No AI response was recorded for this ticket.
+        </p>
+      )}
+      {view.original.other && (
+        <details className="mt-2 text-[13px]">
+          <summary className="cursor-pointer text-xs text-muted-foreground hover:text-foreground">
+            Additional AI output (<code>{view.original.other.source}</code>)
+          </summary>
+          <p className="mt-1.5 whitespace-pre-wrap rounded-md border border-border bg-surface-muted px-3 py-2.5 leading-relaxed">
+            {view.original.other.text}
+          </p>
+        </details>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Low and Medium tickets: no approval step. The AI response is for reference,
+ * and any stored `reviewStatus` is deliberately ignored here (the n8n normal
+ * branch sets "awaiting_review" on these tickets too).
+ */
+function AutoHandledResponse({ ticket }: { ticket: SupportTicketRecord }) {
+  const view = buildResponseWorkspace(ticket);
+  return (
+    <Card>
+      <CardHeader className="flex-row flex-wrap items-center justify-between gap-2 pb-2">
+        <CardTitle>AI response</CardTitle>
+        <Pill label="Approval not required" bg="#EEF0F2" fg="#4B5563" />
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="flex items-start gap-2 rounded-md bg-surface-muted px-3 py-2.5 text-[13px]">
+          <Info className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden />
+          <div>
+            <p className="font-medium">Initial acknowledgement: sent automatically</p>
+            <p className="text-xs text-muted-foreground">
+              The existing n8n workflow sends the acknowledgement email. The AI
+              response below is for your reference: this dashboard does not send
+              it. To write to the customer, use a follow-up message below.
+            </p>
+          </div>
+        </div>
+        <OriginalResponse view={view} />
+      </CardContent>
+    </Card>
+  );
+}
+
+/** Adapts to priority: approval workflow for High/Urgent, read-only otherwise. */
 export function ResponseWorkspace({
+  ticket,
+  onTicketChange,
+}: {
+  ticket: SupportTicketRecord;
+  onTicketChange: (ticket: SupportTicketRecord) => void;
+}) {
+  return approvalRequired(ticket.priority) ? (
+    <ApprovalWorkspace ticket={ticket} onTicketChange={onTicketChange} />
+  ) : (
+    <AutoHandledResponse ticket={ticket} />
+  );
+}
+
+function ApprovalWorkspace({
   ticket,
   onTicketChange,
 }: {
@@ -79,38 +168,7 @@ export function ResponseWorkspace({
       </CardHeader>
 
       <CardContent className="space-y-4">
-        {/* Original, never edited */}
-        <div>
-          <div className="flex flex-wrap items-baseline justify-between gap-2">
-            <h3 className="text-xs font-medium text-muted-foreground">
-              Original AI response
-            </h3>
-            {view.original.source && (
-              <span className="text-[11px] text-subtle-foreground">
-                From <code>{view.original.source}</code> · read-only, always kept
-              </span>
-            )}
-          </div>
-          {view.original.text ? (
-            <p className="mt-1.5 whitespace-pre-wrap rounded-md border border-border bg-surface-muted px-3 py-2.5 text-[13px] leading-relaxed">
-              {view.original.text}
-            </p>
-          ) : (
-            <p className="mt-1.5 text-[13px] text-subtle-foreground">
-              No AI response was recorded for this ticket. You can still write one below.
-            </p>
-          )}
-          {view.original.other && (
-            <details className="mt-2 text-[13px]">
-              <summary className="cursor-pointer text-xs text-muted-foreground hover:text-foreground">
-                Additional AI output (<code>{view.original.other.source}</code>)
-              </summary>
-              <p className="mt-1.5 whitespace-pre-wrap rounded-md border border-border bg-surface-muted px-3 py-2.5 leading-relaxed">
-                {view.original.other.text}
-              </p>
-            </details>
-          )}
-        </div>
+        <OriginalResponse view={view} />
 
         {/* Editor */}
         <div>
