@@ -19,6 +19,8 @@ export interface UseKnowledgeBaseResult {
   refresh: () => void;
   /** Shows a just-created article at once, then re-reads Firestore to confirm. */
   addArticle: (article: KnowledgeArticle) => void;
+  /** Same, for an edited or (de)activated article: replaces it in place by ID. */
+  replaceArticle: (article: KnowledgeArticle) => void;
 }
 
 function toApiError(error: unknown): TicketsApiError {
@@ -80,5 +82,6 @@ export function useKnowledgeBase(): UseKnowledgeBaseResult {
     [request],
   );
 
-  return { articles, error, loading, refreshing, refresh, addArticle };
+  // Both add a new ID or replace an existing one; the ID is the identity.
+  return { articles, error, loading, refreshing, refresh, addArticle, replaceArticle: addArticle };
 }

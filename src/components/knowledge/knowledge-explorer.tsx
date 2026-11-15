@@ -1,14 +1,19 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { CheckCircle2, Plus, RefreshCw, Search, SearchX, X } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Loader2, Pencil, Plus, Power, RefreshCw, Search, SearchX, X } from "lucide-react";
 import { RefreshFailedNotice } from "@/components/overview/overview-states";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { useKnowledgeBase } from "@/hooks/use-knowledge-base";
-import { createKnowledgeArticle } from "@/lib/api/knowledge-base";
+import {
+  createKnowledgeArticle,
+  setArticleActive,
+  updateKnowledgeArticle,
+} from "@/lib/api/knowledge-base";
+import { TicketsApiError } from "@/lib/api/tickets";
 import {
   articleTitle,
   searchArticles,
@@ -41,10 +46,19 @@ function StatusBadge({ active }: { active: boolean | null }) {
 function ArticleReader({
   article,
   terms,
+  onEdit,
+  onToggleActive,
+  toggling,
 }: {
   article: KnowledgeArticle;
   terms: string[];
+  onEdit: () => void;
+  /** Resolves when the change has been saved; throws are handled by the parent. */
+  onToggleActive: (active: boolean) => void;
+  toggling: boolean;
 }) {
+  const [confirming, setConfirming] = useState(false);
+  const isActive = article.active === true;
   const updated = formatDateTime(article.updatedAt);
   return (
     <Card>
@@ -55,6 +69,64 @@ function ArticleReader({
           </h2>
           <StatusBadge active={article.active} />
         </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="outline" size="sm" onClick={onEdit} disabled={toggling}>
+            <Pencil />
+            Edit article
+          </Button>
+          {isActive ? (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setConfirming(true)}
+              disabled={toggling || confirming}
+            >
+              <Power />
+              Deactivate
+            </Button>
+          ) : (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => onToggleActive(true)}
+              disabled={toggling}
+            >
+              {toggling ? <Loader2 className="animate-spin" aria-hidden /> : <Power />}
+              {toggling ? "Activating…" : "Activate"}
+            </Button>
+          )}
+        </div>
+        {confirming && (
+          <div
+            role="alertdialog"
+            aria-label="Confirm deactivation"
+            className="flex flex-wrap items-center gap-2 rounded-md border border-border-strong bg-surface-muted px-3 py-2.5 text-[13px]"
+          >
+            <span className="mr-auto">
+              Deactivate this article? It is kept, with everything in it, and can be
+              reactivated at any time.
+            </span>
+            <Button
+              size="sm"
+              onClick={() => {
+                setConfirming(false);
+                onToggleActive(false);
+              }}
+              disabled={toggling}
+            >
+              Yes, deactivate
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => setConfirming(false)}>
+              Cancel
+            </Button>
+          </div>
+        )}
+        {toggling && isActive && (
+          <p role="status" className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <Loader2 className="size-3.5 animate-spin" aria-hidden />
+            Deactivating…
+          </p>
+        )}
         <dl className="grid grid-cols-1 gap-x-6 gap-y-2 text-[13px] sm:grid-cols-2">
           <div>
             <dt className="text-xs text-muted-foreground">Category</dt>
@@ -90,7 +162,8 @@ function ArticleReader({
         </dl>
         {article.active === false && (
           <p className="rounded-md bg-surface-muted px-3 py-2 text-xs text-muted-foreground">
-            This article is inactive. It is shown here for reference.
+            This article is inactive. It is kept here so you can read it and
+            reactivate it.
           </p>
         )}
       </CardHeader>
@@ -102,12 +175,15 @@ function ArticleReader({
 }
 
 export function KnowledgeExplorer() {
-  const { articles, error, loading, refreshing, refresh, addArticle } = useKnowledgeBase();
+  const { articles, error, loading, refreshing, refresh, addArticle, replaceArticle } =
+    useKnowledgeBase();
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const reader = useRef<HTMLDivElement>(null);
   const [adding, setAdding] = useState(false);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [editing, setEditing] = useState<KnowledgeArticle | null>(null);
+  const [togglingId, setTogglingId] = useState<string | null>(null);
+  const [notice, setNotice] = useState<{ kind: "success" | "error"; message: string } | null>(null);
 
   // The success notice clears itself after a few seconds.
   useEffect(() => {
@@ -122,8 +198,41 @@ export function KnowledgeExplorer() {
     addArticle(article);
     setQuery(""); // make sure the new article isn't filtered out
     setSelectedId(article.id);
-    setNotice(`Article created: ${article.title ?? article.id}`);
+    setNotice({ kind: "success", message: `Article created: ${article.title ?? article.id}` });
     setAdding(false);
+  }
+
+  /** Saves edits to the same document; throws on failure so the form keeps the input. */
+  async function saveEdit(input: ArticleInput) {
+    if (!editing) return;
+    const article = await updateKnowledgeArticle(editing.id, input);
+    replaceArticle(article);
+    setNotice({ kind: "success", message: `Changes saved: ${article.title ?? article.id}` });
+    setEditing(null);
+  }
+
+  async function toggleActive(article: KnowledgeArticle, active: boolean) {
+    if (togglingId) return;
+    setTogglingId(article.id);
+    setNotice(null);
+    try {
+      const updated = await setArticleActive(article.id, active);
+      replaceArticle(updated);
+      setNotice({
+        kind: "success",
+        message: `${active ? "Activated" : "Deactivated"}: ${updated.title ?? updated.id}`,
+      });
+    } catch (error) {
+      setNotice({
+        kind: "error",
+        message:
+          error instanceof TicketsApiError
+            ? error.message
+            : `Couldn't ${active ? "activate" : "deactivate"} the article. Nothing was changed.`,
+      });
+    } finally {
+      setTogglingId(null);
+    }
   }
 
   const terms = useMemo(() => searchTerms(query), [query]);
@@ -165,11 +274,19 @@ export function KnowledgeExplorer() {
 
       {notice && (
         <div
-          role="status"
-          className="flex items-start gap-2 rounded-md border border-[#BFE0CE] bg-[#E5F2EB] px-3 py-2 text-[13px] text-[#1F6B45]"
+          role={notice.kind === "error" ? "alert" : "status"}
+          className={`flex items-start gap-2 rounded-md border px-3 py-2 text-[13px] ${
+            notice.kind === "error"
+              ? "border-[#F0C9C5] bg-[#FBEAE8] text-[#9E2A20]"
+              : "border-[#BFE0CE] bg-[#E5F2EB] text-[#1F6B45]"
+          }`}
         >
-          <CheckCircle2 className="mt-0.5 size-4 shrink-0" aria-hidden />
-          <span className="mr-auto">{notice}</span>
+          {notice.kind === "error" ? (
+            <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden />
+          ) : (
+            <CheckCircle2 className="mt-0.5 size-4 shrink-0" aria-hidden />
+          )}
+          <span className="mr-auto">{notice.message}</span>
           <button
             type="button"
             onClick={() => setNotice(null)}
@@ -179,6 +296,16 @@ export function KnowledgeExplorer() {
             <X className="size-3.5" aria-hidden />
           </button>
         </div>
+      )}
+
+      {editing && (
+        <ArticleFormDialog
+          key={editing.id}
+          article={editing}
+          existingCategories={[...new Set((articles ?? []).map((a) => a.category).filter((c): c is string => !!c))]}
+          onSubmit={saveEdit}
+          onClose={() => setEditing(null)}
+        />
       )}
 
       {adding && (
@@ -292,7 +419,14 @@ export function KnowledgeExplorer() {
 
             <div ref={reader} className="min-w-0 scroll-mt-4">
               {selected ? (
-                <ArticleReader article={selected} terms={terms} />
+                <ArticleReader
+                  key={selected.id}
+                  article={selected}
+                  terms={terms}
+                  onEdit={() => setEditing(selected)}
+                  onToggleActive={(active) => void toggleActive(selected, active)}
+                  toggling={togglingId === selected.id}
+                />
               ) : (
                 <div className="rounded-lg border border-border bg-surface p-8 text-center text-[13px] text-muted-foreground">
                   Select an article to read it.

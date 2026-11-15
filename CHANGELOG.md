@@ -1,5 +1,41 @@
 # Changelog
 
+## Knowledge Base: edit, activate and deactivate
+
+Completes article management. Writes go through a server-side `PATCH /api/knowledge-base/[id]` to the existing `knowledge_base` collection. No schema change, no new dependency, no new environment variable, no n8n change. **Permanent deletion is intentionally not implemented**: there is no DELETE route or button (DELETE and PUT answer 405). Deactivating is the safe alternative.
+
+### Behaviour
+- **Edit article** (button in the reader): the same form as Add article, prefilled with the article's current title, category, keywords, content and status. "Save changes" stays disabled until something changes; the stored category is kept exactly as written. Same validation as creation (required fields, trimmed, blank and duplicate keywords prevented). On save the existing document is updated in place (same ID, never a new document), the list and the selected article refresh, and a success notice appears. If saving fails, the form stays open with everything entered and shows the error; Save retries; repeat submissions are blocked while saving.
+- **Deactivate / Activate** (button in the reader): deactivating asks for confirmation (inline), activating does not. Only the `active` boolean is written; title, category, keywords, content and ID are untouched. The change shows immediately and is re-read from Firestore; success and failure notices are shown. Inactive articles stay in the list (dimmed, "Inactive" badge), stay readable and editable, and can be reactivated.
+
+### API
+`PATCH /api/knowledge-base/[id]` with either `{ "active": boolean }` (toggle, writes only `active`) or the full edit `{ title, category, keywords, content, active }`. Order of checks: document ID (400 `invalid_article_id`), request guard (415/413/400/403), body validation (422 `validation_failed` with per-field messages), then Firestore. A missing document is 404 `article_not_found` and nothing is created. The write is a transaction using `update()`, so any extra fields on a document are preserved.
+
+### Modified / added
+- `src/app/api/knowledge-base/[id]/route.ts` (new): the PATCH route.
+- `src/lib/knowledge-base.ts`: `parseArticleUpdate`, `updateFields`.
+- `src/lib/firestore-knowledge-base.ts`: `updateKnowledgeArticle`, `KnowledgeNotFoundError`, `InvalidArticleIdError`.
+- `src/lib/knowledge-api-errors.ts`: 400/404 mapping.
+- `src/lib/api/knowledge-base.ts`: shared `send` helper; `updateKnowledgeArticle`, `setArticleActive` client calls (create now uses the same helper).
+- `src/hooks/use-knowledge-base.ts`: `replaceArticle`.
+- `src/components/knowledge/article-form-dialog.tsx`: edit mode (prefill, change detection, labels).
+- `src/components/knowledge/knowledge-explorer.tsx`: Edit / Deactivate / Activate controls, confirmation, success and error notices.
+- `CHANGELOG.md`.
+
+### Tested / not tested
+- Lint, type-check and production build pass; Overview, Tickets, Escalations and ticket details still load.
+- Logic tests with an in-memory Firestore fake: same ID, only schema fields written, extra fields preserved, no document created, toggle writes only `active` and restores to the original document, missing document and invalid IDs written nothing.
+- API checks on a running build: 400 invalid ID, 415, 400 bad JSON, 403 cross-origin, 422 field messages, valid input reaches Firestore access, DELETE/PUT 405.
+- Browser tests (stubbed API): prefilled edit form, no-change disabled save, validation, duplicate/blank keywords, failed save keeps input then retry succeeds, double-click sends one request, no duplicate article, keywords and content displayed after save, deactivate (cancel, failure, success), reactivate, inactive article stays visible and editable, 404 handled, create/search/view unchanged, mobile.
+- **Not tested against your real Firestore.** Try: edit the existing article, check the document ID and fields in the Firebase console, deactivate and reactivate it.
+
+### Limitations
+- Last write wins: if two people edit the same article, the later save replaces the earlier one (no conflict detection).
+- No authentication: anyone who can reach the dashboard can edit or deactivate articles.
+- Whether an inactive article is skipped by the n8n workflow depends on how that workflow filters on `active`; the dashboard only sets the field.
+
+---
+
 ## Add Knowledge Base articles
 
 Adds an **Add article** button and form to `/knowledge-base`. New articles are written server-side to the existing `knowledge_base` collection with an auto-generated document ID, using exactly the existing five fields (`title`, `category`, `keywords`, `content`, `active`). No new collection, no schema change, no extra fields (no timestamps), no new dependency, **no new environment variable**. Existing documents (including `app_crash_troubleshooting`) are never modified: the write uses Firestore `create()`, which can't overwrite. Editing and deleting are still not implemented.

@@ -360,3 +360,40 @@ export function validateArticleInput(
     ? { ok: false, errors }
     : { ok: true, value: { title, category, keywords, content, active } };
 }
+
+/* -------------------------------------------------------------------------- */
+/*  Updating an existing article                                              */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * A change to an existing article:
+ *  - "active": toggles `active` only (body is exactly `{ active: boolean }`)
+ *  - "full":   the edit form: all required fields, validated like a new article.
+ * Either way only schema fields are ever written; nothing is created or deleted.
+ */
+export type ArticleUpdate =
+  | { kind: "active"; active: boolean }
+  | { kind: "full"; value: ArticleInput };
+
+export function parseArticleUpdate(
+  raw: unknown,
+): { ok: true; update: ArticleUpdate } | { ok: false; errors: ArticleErrors } {
+  if (typeof raw === "object" && raw !== null && !Array.isArray(raw)) {
+    const keys = Object.keys(raw);
+    if (keys.length === 1 && keys[0] === "active") {
+      const active = (raw as { active: unknown }).active;
+      return typeof active === "boolean"
+        ? { ok: true, update: { kind: "active", active } }
+        : { ok: false, errors: { active: "Active must be true or false." } };
+    }
+  }
+  const parsed = validateArticleInput(raw);
+  return parsed.ok
+    ? { ok: true, update: { kind: "full", value: parsed.value } }
+    : parsed;
+}
+
+/** The Firestore fields an update writes. */
+export function updateFields(update: ArticleUpdate): Record<string, unknown> {
+  return update.kind === "active" ? { active: update.active } : { ...update.value };
+}

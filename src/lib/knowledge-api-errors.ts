@@ -1,6 +1,7 @@
 import "server-only";
 
 import { FirebaseConfigError } from "./firebase-admin";
+import { InvalidArticleIdError, KnowledgeNotFoundError } from "./firestore-knowledge-base";
 import { TicketsTimeoutError } from "./firestore-tickets";
 import { ResponseWorkflowError } from "./response-workflow";
 import { errorResponse, ticketsErrorResponse } from "./ticket-api-errors";
@@ -11,6 +12,16 @@ export function knowledgeErrorResponse(
   logLabel: string,
   options: { write?: boolean } = {},
 ) {
+  if (error instanceof InvalidArticleIdError) {
+    return errorResponse(400, "invalid_article_id", error.message);
+  }
+  if (error instanceof KnowledgeNotFoundError) {
+    return errorResponse(
+      404,
+      "article_not_found",
+      "No article exists with that ID. It may have been removed outside the dashboard; refresh the list.",
+    );
+  }
   // Request-guard failures (415, 413, 400 bad JSON, 403 origin).
   if (error instanceof ResponseWorkflowError) {
     return errorResponse(error.status, error.code, error.message);
@@ -19,7 +30,7 @@ export function knowledgeErrorResponse(
     return ticketsErrorResponse(error, logLabel);
   }
   console.error(
-    `[${logLabel}] Failed to ${options.write ? "save to" : "read"} the knowledge base:`,
+    `[${logLabel}] Failed to ${options.write ? "write to" : "read"} the knowledge base:`,
     error,
   );
 

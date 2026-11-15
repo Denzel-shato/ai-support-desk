@@ -19,6 +19,7 @@ import {
   type ArticleErrors,
   type ArticleInput,
 } from "@/lib/knowledge-base";
+import type { KnowledgeArticle } from "@/lib/types";
 import { MarkdownContent } from "./markdown-content";
 
 const CUSTOM = "__custom__";
@@ -42,31 +43,69 @@ function Label({ htmlFor, children, hint }: { htmlFor: string; children: React.R
   );
 }
 
+/** Category options: presets first, then categories already used by articles. */
+function categoryOptions(existing: string[]): string[] {
+  const list: string[] = [...CATEGORY_PRESETS];
+  for (const c of existing) {
+    if (!list.some((x) => x.toLowerCase() === c.toLowerCase())) list.push(c);
+  }
+  return list;
+}
+
+/** Comparable form of the editable fields, for "has anything changed?". */
+function snapshot(
+  title: string,
+  category: string,
+  keywords: string[],
+  content: string,
+  active: boolean,
+): string {
+  return JSON.stringify([
+    title.trim(),
+    category.trim(),
+    cleanKeywords(keywords),
+    content.replace(/\r\n?/g, "\n").trim(),
+    active,
+  ]);
+}
+
 /**
- * "Add article" form in a native <dialog> (focus trap, Esc and backdrop for free).
- * `onSubmit` performs the save and resolves on success (the parent then closes
+ * Article form in a native <dialog> (focus trap, Esc and backdrop for free).
+ * Without `article` it creates; with `article` it edits that article (every
+ * field prefilled, saved to the same document). `onSubmit` performs the save and resolves on success (the parent then closes
  * the dialog); if it throws, the dialog stays open with everything the user
  * typed and shows the error, so they can fix it and press Save again.
  */
 export function ArticleFormDialog({
+  article,
   existingCategories,
   onSubmit,
   onClose,
 }: {
+  /** Set to edit this article; omit to create a new one. */
+  article?: KnowledgeArticle;
   existingCategories: string[];
   onSubmit: (input: ArticleInput) => Promise<void>;
   onClose: () => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
-  const [title, setTitle] = useState("");
-  const [choice, setChoice] = useState("");
-  const [custom, setCustom] = useState("");
-  const [keywords, setKeywords] = useState<string[]>([]);
+  const editing = article !== undefined;
+  // The stored category is kept exactly as written: if it isn't one of the
+  // options (e.g. different capitalisation), it is shown as a custom value.
+  const storedCategory = article?.category ?? "";
+  const storedIsOption = categoryOptions(existingCategories).includes(storedCategory);
+
+  const [title, setTitle] = useState(article?.title ?? "");
+  const [choice, setChoice] = useState(
+    !editing || !storedCategory ? "" : storedIsOption ? storedCategory : CUSTOM,
+  );
+  const [custom, setCustom] = useState(editing && !storedIsOption ? storedCategory : "");
+  const [keywords, setKeywords] = useState<string[]>(cleanKeywords(article?.keywords ?? []));
   const [keywordInput, setKeywordInput] = useState("");
   const [keywordNote, setKeywordNote] = useState<string | null>(null);
-  const [content, setContent] = useState("");
+  const [content, setContent] = useState(article?.content ?? "");
   const [tab, setTab] = useState<"write" | "preview">("write");
-  const [active, setActive] = useState(true);
+  const [active, setActive] = useState(article?.active ?? true);
   const [errors, setErrors] = useState<ArticleErrors>({});
   const [formError, setFormError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -75,20 +114,27 @@ export function ArticleFormDialog({
     dialog.current?.showModal();
   }, []);
 
-  // Presets first, then categories already used by articles; custom is always possible.
-  const categories: string[] = [...CATEGORY_PRESETS];
-  for (const c of existingCategories) {
-    if (!categories.some((x) => x.toLowerCase() === c.toLowerCase())) categories.push(c);
-  }
+  const categories = categoryOptions(existingCategories);
   const category = choice === CUSTOM ? custom : choice;
 
-  const dirty =
-    title.trim() !== "" || choice !== "" || keywords.length > 0 || keywordInput.trim() !== "" ||
-    content.trim() !== "" || !active;
+  const pending = keywordInput.split(",").map((k) => k.trim()).filter(Boolean);
+  const baseline = editing
+    ? snapshot(article.title ?? "", article.category ?? "", article.keywords, article.content, article.active ?? true)
+    : snapshot("", "", [], "", true);
+  const dirty = snapshot(title, category, [...keywords, ...pending], content, active) !== baseline;
 
   function attemptClose() {
     if (saving) return;
-    if (dirty && !window.confirm("Discard this article? What you've entered will be lost.")) return;
+    if (
+      dirty &&
+      !window.confirm(
+        editing
+          ? "Discard your changes to this article?"
+          : "Discard this article? What you've entered will be lost.",
+      )
+    ) {
+      return;
+    }
     onClose();
   }
 
@@ -117,7 +163,6 @@ export function ArticleFormDialog({
     e.preventDefault();
     if (saving) return;
     // A keyword typed but not yet added still counts.
-    const pending = keywordInput.split(",").map((k) => k.trim()).filter(Boolean);
     const finalKeywords = cleanKeywords([...keywords, ...pending]);
     const parsed = validateArticleInput({ title, category, keywords: finalKeywords, content, active });
     if (!parsed.ok) {
@@ -142,6 +187,8 @@ export function ArticleFormDialog({
   }
 
   const busy = saving;
+  // Editing: nothing to save until something changed.
+  const nothingToSave = editing && !dirty;
 
   return (
     <dialog
@@ -160,10 +207,12 @@ export function ArticleFormDialog({
         <div className="flex items-start justify-between gap-3 border-b border-border px-5 py-4">
           <div>
             <h2 id="add-article-title" className="text-base font-semibold tracking-tight">
-              Add article
+              {editing ? "Edit article" : "Add article"}
             </h2>
             <p className="mt-0.5 text-xs text-muted-foreground">
-              Saved to the knowledge base the AI checks before drafting replies.
+              {editing
+                ? "Changes are saved to this article. Its ID stays the same."
+                : "Saved to the knowledge base the AI checks before drafting replies."}
             </p>
           </div>
           <Button type="button" variant="ghost" size="icon" onClick={attemptClose} disabled={busy} aria-label="Close">
@@ -383,9 +432,9 @@ export function ArticleFormDialog({
           <Button type="button" variant="ghost" onClick={attemptClose} disabled={busy}>
             Cancel
           </Button>
-          <Button type="submit" disabled={busy}>
+          <Button type="submit" disabled={busy || nothingToSave}>
             {busy ? <Loader2 className="animate-spin" aria-hidden /> : null}
-            {busy ? "Saving…" : "Save article"}
+            {busy ? "Saving…" : editing ? "Save changes" : "Save article"}
           </Button>
         </div>
       </form>

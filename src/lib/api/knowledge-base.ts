@@ -16,23 +16,22 @@ export async function fetchKnowledgeArticles(
   return body as KnowledgeArticle[];
 }
 
-/** Creates an article. Throws TicketsApiError (with `fields` for validation errors). */
-export async function createKnowledgeArticle(
-  input: ArticleInput,
+async function send(
+  url: string,
+  method: "POST" | "PATCH",
+  payload: unknown,
+  unreachable: string,
 ): Promise<KnowledgeArticle> {
   let response: Response;
   try {
-    response = await fetch("/api/knowledge-base", {
-      method: "POST",
+    response = await fetch(url, {
+      method,
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(input),
+      body: JSON.stringify(payload),
       cache: "no-store",
     });
   } catch {
-    throw new TicketsApiError(
-      "Couldn't reach the dashboard server. Your article wasn't saved; check your connection and try again.",
-      { code: "network_error" },
-    );
+    throw new TicketsApiError(unreachable, { code: "network_error" });
   }
   let body: unknown = null;
   try {
@@ -55,4 +54,37 @@ export async function createKnowledgeArticle(
     });
   }
   return article;
+}
+
+/** Creates an article. Throws TicketsApiError (with `fields` for validation errors). */
+export function createKnowledgeArticle(input: ArticleInput): Promise<KnowledgeArticle> {
+  return send(
+    "/api/knowledge-base",
+    "POST",
+    input,
+    "Couldn't reach the dashboard server. Your article wasn't saved; check your connection and try again.",
+  );
+}
+
+/** Saves edits to an existing article (same document ID). */
+export function updateKnowledgeArticle(
+  id: string,
+  input: ArticleInput,
+): Promise<KnowledgeArticle> {
+  return send(
+    `/api/knowledge-base/${encodeURIComponent(id)}`,
+    "PATCH",
+    input,
+    "Couldn't reach the dashboard server. Your changes weren't saved; check your connection and try again.",
+  );
+}
+
+/** Activates or deactivates an article. Never deletes anything. */
+export function setArticleActive(id: string, active: boolean): Promise<KnowledgeArticle> {
+  return send(
+    `/api/knowledge-base/${encodeURIComponent(id)}`,
+    "PATCH",
+    { active },
+    "Couldn't reach the dashboard server. The article wasn't changed; check your connection and try again.",
+  );
 }
