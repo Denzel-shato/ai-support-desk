@@ -161,3 +161,26 @@ export interface OverviewData {
   recent: Ticket[];
   total: number;
 }
+
+/* -------------------------------------------------------------------------- */
+/*  Knowledge base                                                            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * One document from the `knowledge_base` collection, as returned by
+ * GET /api/knowledge-base. The document ID is the article ID. Fields mirror
+ * the stored schema (`title`, `category`, `active`, `keywords`, `content`);
+ * all but `id` and `content` may be missing, and `updatedAt` is only present
+ * when the source document has one.
+ */
+export interface KnowledgeArticle {
+  id: string;
+  title: string | null;
+  category: string | null;
+  /** null when the document has no usable `active` value. */
+  active: boolean | null;
+  keywords: string[];
+  /** Markdown-style article text, exactly as stored. */
+  content: string;
+  updatedAt: string | null;
+}

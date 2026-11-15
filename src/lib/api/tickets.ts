@@ -50,7 +50,7 @@ function isApiErrorBody(value: unknown): value is ApiErrorBody {
   );
 }
 
-async function requestJson(
+export async function requestJson(
   url: string,
   signal?: AbortSignal,
 ): Promise<{ body: unknown; status: number }> {

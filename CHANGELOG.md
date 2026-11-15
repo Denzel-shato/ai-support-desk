@@ -1,5 +1,38 @@
 # Changelog
 
+## Knowledge Base page (`/knowledge-base`)
+
+Read-only. Reads the existing Firestore collection `knowledge_base` through the shared Firebase Admin instance, server-side only. No schema change, no writes, no new dependency, no new environment variable, no n8n change.
+
+### Added
+- `src/app/api/knowledge-base/route.ts`: `GET /api/knowledge-base`, all articles as JSON (active first); same error shape as the ticket routes.
+- `src/lib/firestore-knowledge-base.ts` (server-only): reads `knowledge_base` (cap 200), reusing `getAdminDb` and `withTimeout`.
+- `src/lib/knowledge-api-errors.ts`: maps errors to JSON responses (knowledge-base wording).
+- `src/lib/knowledge-base.ts` (pure): document -> article normalisation (missing/odd fields tolerated), search, and a small Markdown parser (headings, nested ordered/bullet lists, bold, italic, inline code, rules). Output is plain data rendered as React elements, so article text can't inject HTML.
+- `src/lib/api/knowledge-base.ts`, `src/hooks/use-knowledge-base.ts`: client fetch and hook (same pattern as tickets).
+- `src/components/knowledge/knowledge-explorer.tsx`: searchable article list, article reader (title, category, Active/Inactive, keywords, ID, last updated only if the document has `updatedAt`), refresh.
+- `src/components/knowledge/markdown-content.tsx`: Markdown rendering with search-term highlighting; drops a leading `# Title` that merely repeats the article title.
+- `src/components/knowledge/knowledge-states.tsx`: loading, empty and error states.
+
+### Modified
+- `src/app/(dashboard)/knowledge-base/page.tsx`: placeholder replaced by the explorer.
+- `src/lib/types.ts`: added `KnowledgeArticle`.
+- `src/lib/api/tickets.ts`: `requestJson` is now exported (one keyword) so the knowledge-base client can reuse it.
+- `CHANGELOG.md`.
+
+### Behaviour
+- Fields used: `title`, `category`, `active`, `keywords`, `content` (and `updatedAt` only if present). Article ID = document ID.
+- Search matches title, category, keywords, ID and content (all words must match); content matches show a snippet and are highlighted in the reader.
+- Inactive articles are shown, labelled "Inactive" and dimmed. The list always renders, so a single article shows as "1 article" and more articles work without changes.
+
+### Tested / not tested
+- Lint, type-check and production build pass; Overview, Tickets and Escalations still load.
+- 7 logic tests (normalisation, Markdown, search, ordering) and browser tests with a stubbed API: one article, inactive plus multiple articles, empty, error and retry, loading, mobile width, no HTML injection.
+- Without credentials, the real route correctly answers 503 `firebase_not_configured`.
+- **Not tested against your real Firestore.** The stub used your documented fields, not your actual article text. Check how the real Markdown renders (see the checklist in the reply).
+
+---
+
 ## Priority-based handling, follow-ups and communication history
 
 ### Behaviour

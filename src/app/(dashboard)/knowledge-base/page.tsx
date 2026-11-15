@@ -1,12 +1,5 @@
-import { BookOpen } from "lucide-react";
-import { PlaceholderPage } from "@/components/layout/placeholder-page";
+import { KnowledgeExplorer } from "@/components/knowledge/knowledge-explorer";
 
 export default function Page() {
-  return (
-    <PlaceholderPage
-      icon={BookOpen}
-      title="Knowledge base is coming next"
-      description="Articles the AI checks before drafting a reply will be managed here."
-    />
-  );
+  return <KnowledgeExplorer />;
 }
