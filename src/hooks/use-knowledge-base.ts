@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { fetchKnowledgeArticles } from "@/lib/api/knowledge-base";
 import { TicketsApiError } from "@/lib/api/tickets";
+import { compareArticles } from "@/lib/knowledge-base";
 import type { KnowledgeArticle } from "@/lib/types";
 
 /**
@@ -16,6 +17,8 @@ export interface UseKnowledgeBaseResult {
   loading: boolean;
   refreshing: boolean;
   refresh: () => void;
+  /** Shows a just-created article at once, then re-reads Firestore to confirm. */
+  addArticle: (article: KnowledgeArticle) => void;
 }
 
 function toApiError(error: unknown): TicketsApiError {
@@ -65,5 +68,17 @@ export function useKnowledgeBase(): UseKnowledgeBaseResult {
     request();
   }, [request]);
 
-  return { articles, error, loading, refreshing, refresh };
+  const addArticle = useCallback(
+    (article: KnowledgeArticle) => {
+      setArticles((prev) =>
+        [...(prev ?? []).filter((a) => a.id !== article.id), article].sort(compareArticles),
+      );
+      setError(null);
+      setLoading(false);
+      request(); // the list stays Firestore-backed: re-read it
+    },
+    [request],
+  );
+
+  return { articles, error, loading, refreshing, refresh, addArticle };
 }

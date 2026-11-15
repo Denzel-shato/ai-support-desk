@@ -23,6 +23,8 @@ export class TicketsApiError extends Error {
   readonly status: number | null;
   /** Names (never values) of missing server environment variables. */
   readonly missing: string[];
+  /** Per-field validation messages from a rejected form submission. */
+  readonly fields: Record<string, string>;
 
   constructor(
     message: string,
@@ -30,6 +32,7 @@ export class TicketsApiError extends Error {
       code: TicketsErrorCode | string;
       status?: number | null;
       missing?: string[];
+      fields?: Record<string, string>;
     },
   ) {
     super(message);
@@ -37,6 +40,7 @@ export class TicketsApiError extends Error {
     this.code = options.code;
     this.status = options.status ?? null;
     this.missing = options.missing ?? [];
+    this.fields = options.fields ?? {};
   }
 }
 

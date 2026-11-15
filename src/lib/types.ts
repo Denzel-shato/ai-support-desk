@@ -73,6 +73,8 @@ export interface ApiErrorBody {
     message: string;
     /** Names (never values) of missing environment variables. */
     missing?: string[];
+    /** Per-field validation messages (form submissions). */
+    fields?: Record<string, string>;
   };
 }
 

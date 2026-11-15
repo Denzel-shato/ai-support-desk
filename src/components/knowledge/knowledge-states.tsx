@@ -50,8 +50,8 @@ export function KnowledgeEmpty({
         </span>
         <h2 className="mt-3 text-sm font-semibold">No articles found</h2>
         <p className="mt-1 text-[13px] text-muted-foreground">
-          The <code>knowledge_base</code> collection has no articles yet. Articles
-          the AI checks before drafting a reply will appear here.
+          The <code>knowledge_base</code> collection has no articles yet. Use
+          Add article to create the first one.
         </p>
         <Button variant="outline" className="mt-4" onClick={onRefresh} disabled={refreshing}>
           <RefreshCw className={refreshing ? "animate-spin" : undefined} />

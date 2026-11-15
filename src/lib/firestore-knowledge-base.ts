@@ -1,11 +1,13 @@
 import "server-only";
 
+import type { Firestore } from "firebase-admin/firestore";
 import { getAdminDb } from "./firebase-admin";
 import { withTimeout } from "./firestore-tickets";
 import {
   compareArticles,
   KNOWLEDGE_COLLECTION,
   toKnowledgeArticle,
+  type ArticleInput,
 } from "./knowledge-base";
 import type { KnowledgeArticle } from "./types";
 
@@ -27,4 +29,26 @@ export async function listKnowledgeArticles(): Promise<KnowledgeArticle[]> {
   return snapshot.docs
     .map((doc) => toKnowledgeArticle(doc.id, doc.data()))
     .sort(compareArticles);
+}
+
+/**
+ * Creates one article in `knowledge_base` with an auto-generated document ID.
+ * Writes exactly the existing five fields (title, category, keywords, content,
+ * active): no new fields, no new collection. `create()` fails rather than
+ * overwrite, so an existing document can never be replaced.
+ */
+export async function createKnowledgeArticle(
+  input: ArticleInput,
+  db: Firestore = getAdminDb(),
+): Promise<KnowledgeArticle> {
+  const ref = db.collection(KNOWLEDGE_COLLECTION).doc();
+  const data = {
+    title: input.title,
+    category: input.category,
+    keywords: input.keywords,
+    content: input.content,
+    active: input.active,
+  };
+  await withTimeout(ref.create(data), QUERY_TIMEOUT_MS);
+  return toKnowledgeArticle(ref.id, data);
 }

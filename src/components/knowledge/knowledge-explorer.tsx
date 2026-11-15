@@ -1,20 +1,23 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
-import { RefreshCw, Search, SearchX, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { CheckCircle2, Plus, RefreshCw, Search, SearchX, X } from "lucide-react";
 import { RefreshFailedNotice } from "@/components/overview/overview-states";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { useKnowledgeBase } from "@/hooks/use-knowledge-base";
+import { createKnowledgeArticle } from "@/lib/api/knowledge-base";
 import {
   articleTitle,
   searchArticles,
   searchTerms,
+  type ArticleInput,
 } from "@/lib/knowledge-base";
 import { formatDateTime } from "@/lib/ticket-detail";
 import type { KnowledgeArticle } from "@/lib/types";
+import { ArticleFormDialog } from "./article-form-dialog";
 import { MarkdownContent } from "./markdown-content";
 import { KnowledgeEmpty, KnowledgeError, KnowledgeSkeleton } from "./knowledge-states";
 
@@ -99,10 +102,29 @@ function ArticleReader({
 }
 
 export function KnowledgeExplorer() {
-  const { articles, error, loading, refreshing, refresh } = useKnowledgeBase();
+  const { articles, error, loading, refreshing, refresh, addArticle } = useKnowledgeBase();
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const reader = useRef<HTMLDivElement>(null);
+  const [adding, setAdding] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  // The success notice clears itself after a few seconds.
+  useEffect(() => {
+    if (!notice) return;
+    const timer = setTimeout(() => setNotice(null), 7000);
+    return () => clearTimeout(timer);
+  }, [notice]);
+
+  /** Saves via the API; throws on failure so the form stays open with its data. */
+  async function create(input: ArticleInput) {
+    const article = await createKnowledgeArticle(input);
+    addArticle(article);
+    setQuery(""); // make sure the new article isn't filtered out
+    setSelectedId(article.id);
+    setNotice(`Article created: ${article.title ?? article.id}`);
+    setAdding(false);
+  }
 
   const terms = useMemo(() => searchTerms(query), [query]);
   const hits = useMemo(
@@ -127,13 +149,45 @@ export function KnowledgeExplorer() {
       <section className="flex flex-wrap items-end justify-between gap-3">
         <p className="text-[13px] text-muted-foreground">
           The troubleshooting knowledge the AI checks before classifying tickets
-          and drafting replies. Read-only.
+          and drafting replies.
         </p>
-        <Button variant="outline" onClick={refresh} disabled={loading || refreshing}>
-          <RefreshCw className={refreshing ? "animate-spin" : undefined} />
-          Refresh
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" onClick={refresh} disabled={loading || refreshing}>
+            <RefreshCw className={refreshing ? "animate-spin" : undefined} />
+            Refresh
+          </Button>
+          <Button onClick={() => setAdding(true)} disabled={!articles}>
+            <Plus />
+            Add article
+          </Button>
+        </div>
       </section>
+
+      {notice && (
+        <div
+          role="status"
+          className="flex items-start gap-2 rounded-md border border-[#BFE0CE] bg-[#E5F2EB] px-3 py-2 text-[13px] text-[#1F6B45]"
+        >
+          <CheckCircle2 className="mt-0.5 size-4 shrink-0" aria-hidden />
+          <span className="mr-auto">{notice}</span>
+          <button
+            type="button"
+            onClick={() => setNotice(null)}
+            aria-label="Dismiss"
+            className="flex size-5 items-center justify-center rounded hover:bg-black/5"
+          >
+            <X className="size-3.5" aria-hidden />
+          </button>
+        </div>
+      )}
+
+      {adding && (
+        <ArticleFormDialog
+          existingCategories={[...new Set((articles ?? []).map((a) => a.category).filter((c): c is string => !!c))]}
+          onSubmit={create}
+          onClose={() => setAdding(false)}
+        />
+      )}
 
       {loading && <KnowledgeSkeleton />}
 

@@ -274,3 +274,89 @@ export function parseMarkdown(source: string): BlockNode[] {
   flushPara();
   return blocks;
 }
+
+/* -------------------------------------------------------------------------- */
+/*  New-article validation (shared by the form and the server)                */
+/* -------------------------------------------------------------------------- */
+
+export const MAX_TITLE = 200;
+export const MAX_CATEGORY = 60;
+export const MAX_KEYWORD = 50;
+export const MAX_KEYWORDS = 20;
+export const MAX_CONTENT = 50_000;
+
+/** Suggested categories. Any other category is allowed. */
+export const CATEGORY_PRESETS = ["Bug", "Question", "Billing", "Account", "Technical Support"] as const;
+
+/** Exactly the stored schema: nothing else is ever written. */
+export interface ArticleInput {
+  title: string;
+  category: string;
+  keywords: string[];
+  content: string;
+  active: boolean;
+}
+
+export type ArticleField = keyof ArticleInput | "form";
+export type ArticleErrors = Partial<Record<ArticleField, string>>;
+
+/** Trims, drops blank entries and removes duplicates (case-insensitive, first spelling kept). */
+export function cleanKeywords(list: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of list) {
+    const k = raw.trim().replace(/\s+/g, " ");
+    if (!k || seen.has(k.toLowerCase())) continue;
+    seen.add(k.toLowerCase());
+    out.push(k);
+  }
+  return out;
+}
+
+/**
+ * Validates and normalises a new article. Used by the form (instant feedback)
+ * and by the API route (the real check: the server never trusts the browser).
+ * Unknown properties are ignored, so only the five schema fields can be stored.
+ */
+export function validateArticleInput(
+  raw: unknown,
+): { ok: true; value: ArticleInput } | { ok: false; errors: ArticleErrors } {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    return { ok: false, errors: { form: "The article must be an object." } };
+  }
+  const o = raw as Record<string, unknown>;
+  const errors: ArticleErrors = {};
+
+  const title = typeof o.title === "string" ? o.title.trim() : "";
+  if (!title) errors.title = "Enter a title.";
+  else if (title.length > MAX_TITLE) errors.title = `Keep the title under ${MAX_TITLE} characters.`;
+
+  const category = typeof o.category === "string" ? o.category.trim() : "";
+  if (!category) errors.category = "Choose or enter a category.";
+  else if (category.length > MAX_CATEGORY) errors.category = `Keep the category under ${MAX_CATEGORY} characters.`;
+
+  let keywords: string[] = [];
+  if (o.keywords !== undefined && o.keywords !== null) {
+    if (!Array.isArray(o.keywords) || o.keywords.some((k) => typeof k !== "string")) {
+      errors.keywords = "Keywords must be a list of text values.";
+    } else {
+      keywords = cleanKeywords(o.keywords as string[]);
+      if (keywords.some((k) => k.length > MAX_KEYWORD)) errors.keywords = `Keep each keyword under ${MAX_KEYWORD} characters.`;
+      else if (keywords.length > MAX_KEYWORDS) errors.keywords = `Use at most ${MAX_KEYWORDS} keywords.`;
+    }
+  }
+
+  const content = typeof o.content === "string" ? o.content.replace(/\r\n?/g, "\n").trim() : "";
+  if (!content) errors.content = "Write the article content.";
+  else if (content.length > MAX_CONTENT) errors.content = `The content is too long (limit ${MAX_CONTENT.toLocaleString("en-US")} characters).`;
+
+  let active = true;
+  if (o.active !== undefined && o.active !== null) {
+    if (typeof o.active === "boolean") active = o.active;
+    else errors.active = "Active must be true or false.";
+  }
+
+  return Object.keys(errors).length
+    ? { ok: false, errors }
+    : { ok: true, value: { title, category, keywords, content, active } };
+}

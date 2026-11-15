@@ -1,5 +1,41 @@
 # Changelog
 
+## Add Knowledge Base articles
+
+Adds an **Add article** button and form to `/knowledge-base`. New articles are written server-side to the existing `knowledge_base` collection with an auto-generated document ID, using exactly the existing five fields (`title`, `category`, `keywords`, `content`, `active`). No new collection, no schema change, no extra fields (no timestamps), no new dependency, **no new environment variable**. Existing documents (including `app_crash_troubleshooting`) are never modified: the write uses Firestore `create()`, which can't overwrite. Editing and deleting are still not implemented.
+
+### Added
+- `src/components/knowledge/article-form-dialog.tsx`: the form, in a native `<dialog>` (focus trap, Esc, backdrop). Title; category (Bug, Question, Billing, Account, Technical Support, categories already in use, or "Other (custom)"); keywords as removable chips (Enter, comma or Add; trimmed, blanks and case-insensitive duplicates rejected); Markdown content editor with Write/Preview; Active switch (default on). Save is disabled while saving; on failure the dialog stays open with everything entered and shows the error, and Save retries. Closing with unsaved input asks for confirmation.
+
+### Modified
+- `src/lib/knowledge-base.ts`: shared `validateArticleInput` (used by the form and the server), `cleanKeywords`, limits and category presets.
+- `src/lib/firestore-knowledge-base.ts`: `createKnowledgeArticle` (auto ID, `create()`).
+- `src/app/api/knowledge-base/route.ts`: new `POST`. Checks JSON content type, same-origin, size, then validates (422 `validation_failed` with per-field messages) before touching Firestore. 201 `{ article }` on success.
+- `src/lib/knowledge-api-errors.ts`: request-guard errors and write-specific messages.
+- `src/lib/api/knowledge-base.ts`: `createKnowledgeArticle` client call.
+- `src/lib/api/tickets.ts`, `src/lib/types.ts`: `TicketsApiError` and `ApiErrorBody` gain an optional `fields` map for validation messages.
+- `src/hooks/use-knowledge-base.ts`: `addArticle` shows the new article immediately, then re-reads Firestore so the list stays Firestore-backed.
+- `src/components/knowledge/knowledge-explorer.tsx`: Add article button, dialog wiring, success notice (auto-dismisses), selects the new article and clears the search so it is visible.
+- `src/components/knowledge/knowledge-states.tsx`: empty-state text points to Add article.
+- `CHANGELOG.md`.
+
+### Validation (server)
+Title 1-200, category 1-60, content 1-50,000 characters (all trimmed; line endings normalised); keywords optional, max 20, each 1-50 characters, blanks dropped, duplicates removed; `active` must be boolean (default true). Unknown properties are ignored.
+
+### Setup
+None. Your service account must be allowed to **write** to Firestore (it already writes tickets). If it can't, the form shows "Firestore rejected the save".
+
+### Tested / not tested
+- Lint, type-check and production build pass; Overview, Tickets, Escalations and the earlier Knowledge Base browser tests still pass.
+- 5 logic tests (validation, exact five-field write with auto ID, error propagation); API checks on a running build (415, 400, 403, 422 with field messages, valid payload reaches Firestore access); browser test with a stubbed API: validation, custom category, keyword chips, preview, toggle, double-click sends one request, failed save keeps all input, retry succeeds, list refreshes, new article readable with its status and keywords, confirm-on-close, mobile.
+- **Not tested against your real Firestore** (no credentials here). Please create one test article and check the document in the Firebase console.
+
+### Limitations
+- A save whose response is lost (browser offline after the server wrote) can't be detected, so retrying could create a second article. Firestore auto IDs make a retry a new document; delete the duplicate in the console if it happens.
+- Still no authentication: anyone who can reach the dashboard can add articles.
+
+---
+
 ## Knowledge Base page (`/knowledge-base`)
 
 Read-only. Reads the existing Firestore collection `knowledge_base` through the shared Firebase Admin instance, server-side only. No schema change, no writes, no new dependency, no new environment variable, no n8n change.
