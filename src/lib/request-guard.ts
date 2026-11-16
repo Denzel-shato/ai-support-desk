@@ -4,19 +4,39 @@ import { ResponseWorkflowError } from "./response-workflow";
 
 /**
  * Guards for state-changing API routes: JSON only, same-origin, size-capped.
- * (There is no login in this demo, so these only stop casual cross-site posts.)
+ * These are defence in depth against cross-site requests; authentication
+ * (requireAuth) is what decides WHO may call a route.
  */
 
 export const MAX_BODY_BYTES = 64 * 1024;
 
-function sameOrigin(request: Request): boolean {
+/**
+ * A browser request must come from this site. We check Sec-Fetch-Site (sent by
+ * all current browsers and not forgeable from page JavaScript) and Origin.
+ * Requests with neither header are not from a browser (curl, scripts, tests):
+ * they can't ride on a victim's cookie, and still need to be signed in.
+ */
+export function isSameOriginRequest(request: Request): boolean {
+  const fetchSite = request.headers.get("sec-fetch-site");
+  if (fetchSite && fetchSite !== "same-origin" && fetchSite !== "none") return false;
+
   const origin = request.headers.get("origin");
-  if (!origin) return true; // non-browser callers (curl, tests) send no Origin
+  if (!origin) return true;
   const host = request.headers.get("x-forwarded-host") ?? request.headers.get("host");
   try {
     return !!host && new URL(origin).host === host;
   } catch {
     return false;
+  }
+}
+
+export function assertSameOrigin(request: Request): void {
+  if (!isSameOriginRequest(request)) {
+    throw new ResponseWorkflowError(
+      403,
+      "forbidden_origin",
+      "This request came from a different site and was refused.",
+    );
   }
 }
 
@@ -26,13 +46,7 @@ export async function readJsonBody(
 ): Promise<unknown> {
   const maxBytes = options.maxBytes ?? MAX_BODY_BYTES;
 
-  if (!sameOrigin(request)) {
-    throw new ResponseWorkflowError(
-      403,
-      "forbidden_origin",
-      "This request came from a different site and was refused.",
-    );
-  }
+  assertSameOrigin(request);
 
   const type = request.headers.get("content-type") ?? "";
   if (!type.toLowerCase().startsWith("application/json")) {

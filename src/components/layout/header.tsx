@@ -2,11 +2,9 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Bell, ChevronRight, Menu, Search } from "lucide-react";
+import { ChevronRight, Menu, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { currentUser } from "@/lib/mock-data";
-import { Avatar } from "./avatar";
 import { isActive, navItems } from "./nav-config";
 
 export function Header({ onOpenNav }: { onOpenNav: () => void }) {
@@ -79,19 +77,6 @@ export function Header({ onOpenNav }: { onOpenNav: () => void }) {
         >
           <Search />
         </Button>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="relative"
-          aria-label="Notifications, 3 unread"
-        >
-          <Bell />
-          <span
-            aria-hidden
-            className="absolute right-1.5 top-1.5 size-2 rounded-full border-2 border-background bg-[#C93A2E]"
-          />
-        </Button>
-        <Avatar initials={currentUser.initials} />
       </div>
     </header>
   );

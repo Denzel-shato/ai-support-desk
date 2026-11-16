@@ -2,9 +2,9 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LifeBuoy, X } from "lucide-react";
+import { LifeBuoy, LogOut, X } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { currentUser } from "@/lib/mock-data";
+import { useSession } from "@/hooks/use-session";
 import { Avatar } from "./avatar";
 import { isActive, navItems } from "./nav-config";
 
@@ -23,6 +23,8 @@ export function Wordmark() {
 
 export function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
+  const session = useSession();
+  const name = session.username ?? (session.loading ? "…" : "Signed in");
 
   return (
     <div className="flex h-full flex-col">
@@ -71,15 +73,20 @@ export function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
 
       <div className="border-t border-border p-3">
         <div className="flex items-center gap-2.5 rounded-md px-1 py-1">
-          <Avatar initials={currentUser.initials} />
-          <div className="min-w-0 leading-tight">
-            <p className="truncate text-[13px] font-medium">
-              {currentUser.name}
-            </p>
-            <p className="truncate text-xs text-muted-foreground">
-              {currentUser.role}
-            </p>
+          <Avatar initials={name.slice(0, 2).toUpperCase()} />
+          <div className="min-w-0 flex-1 leading-tight">
+            <p className="truncate text-[13px] font-medium">{name}</p>
+            <p className="truncate text-xs text-muted-foreground">Signed in</p>
           </div>
+          <button
+            type="button"
+            onClick={() => void session.signOut()}
+            aria-label="Sign out"
+            title="Sign out"
+            className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-black/5 hover:text-foreground"
+          >
+            <LogOut className="size-4" aria-hidden />
+          </button>
         </div>
       </div>
     </div>

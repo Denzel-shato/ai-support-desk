@@ -170,7 +170,7 @@ function sendIntegration(f: StatusFacts): Integration {
 
   const facts: Row[] = [
     { label: "Webhook URL", value: "Set (hidden)" },
-    { label: "Shared secret header", value: f.webhook.secretSet ? "Set" : "Not set (recommended)" },
+    { label: "Shared secret header", value: f.webhook.secretSet ? "Set" : "Not set (required in production)" },
   ];
   if (sent !== null) facts.push({ label: "Responses confirmed sent by n8n", value: n(sent) });
 
@@ -214,7 +214,7 @@ export function buildSettingsStatus(f: StatusFacts): SettingsStatus {
       { label: "Application", value: APP_NAME },
       { label: "Description", value: APP_DESCRIPTION },
       { label: "Data store", value: f.firebase.projectId ? `Firestore, project ${f.firebase.projectId}` : "Firestore (project not set)" },
-      { label: "Sign-in", value: "None. The dashboard has no accounts or authentication: anyone who can open it can use it." },
+      { label: "Sign-in", value: "Required. One shared account; every page and API route needs a signed-in session (8 hours). There are no roles or per-user permissions." },
     ],
     notifications: [
       {
