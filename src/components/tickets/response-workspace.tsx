@@ -127,7 +127,7 @@ export function ResponseWorkspace({
   ticket: SupportTicketRecord;
   onTicketChange: (ticket: SupportTicketRecord) => void;
 }) {
-  return approvalRequired(ticket.priority) ? (
+  return approvalRequired(ticket) ? (
     <ApprovalWorkspace ticket={ticket} onTicketChange={onTicketChange} />
   ) : (
     <AutoHandledResponse ticket={ticket} />

@@ -39,6 +39,8 @@ export interface SupportTicketRecord {
 
   /* Responses */
   escalationRequired?: boolean | null;
+  /** Set by the intake workflow when automatic processing failed (manual handling required). */
+  intakeIssue?: string | null;
   customerResponse?: string | null;
   aiResponse?: string | null;
 

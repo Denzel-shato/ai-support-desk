@@ -115,10 +115,10 @@ type RawDoc = Record<string, unknown>;
 export { approvalRequired };
 
 export const NOT_REQUIRED_MESSAGE =
-  "Low and Medium tickets don't use approval. Use a follow-up message to write to the customer.";
+  "This ticket is handled automatically (Low/Medium priority, covered by the knowledge base), so it doesn't use approval. Use a follow-up message to write to the customer.";
 
 function assertApprovalApplies(raw: RawDoc): void {
-  if (!approvalRequired(raw.priority)) {
+  if (!approvalRequired(raw)) {
     throw new ResponseWorkflowError(409, "approval_not_required", NOT_REQUIRED_MESSAGE);
   }
 }
@@ -318,7 +318,7 @@ export function buildResponseWorkspace(
   const sentAt = toIsoOrNull(t.responseSentAt);
 
   return {
-    approvalRequired: approvalRequired(t.priority),
+    approvalRequired: approvalRequired(t),
     original,
     savedFinal,
     baseline: savedFinal ?? original.text ?? "",

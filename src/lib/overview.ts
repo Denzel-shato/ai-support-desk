@@ -73,15 +73,33 @@ export function isEscalated(t: SupportTicketRecord): boolean {
 }
 
 /**
- * Whether the AI response needs a human decision before it can be emailed.
- * Decided by PRIORITY only, never by the stored `reviewStatus`: the n8n
- * normal-handling branch writes "awaiting_review" for Low and Medium tickets
- * too. Low and Medium: no. High and Urgent: yes. A missing or unrecognised
- * priority requires approval: the safe default.
+ * The ONE rule for "needs a human before anything is emailed", shared with the
+ * n8n intake workflow (n8n/code/build-ticket.js implements the same rule).
+ * Only Low and Medium priority tickets may be handled automatically, and only
+ * while nothing contradicts it. Human review is required for:
+ *  - High, Urgent, missing or unrecognised priority (no aliases: "normal" or
+ *    "critical" are NOT accepted as Low/Medium here);
+ *  - `escalationRequired: true`, or `kbStatus: "not_covered"`: the knowledge
+ *    base doesn't support an automatic answer;
+ *  - `intakeIssue` set: automatic processing failed, so there is no trustworthy
+ *    classification or response.
+ * Never decided by the stored `reviewStatus`: n8n writes "awaiting_review" on
+ * every ticket.
  */
-export function approvalRequired(priority: unknown): boolean {
-  const p = normalizePriority(priority);
-  return p !== "low" && p !== "medium";
+export interface ApprovalInput {
+  priority?: unknown;
+  kbStatus?: unknown;
+  escalationRequired?: unknown;
+  intakeIssue?: unknown;
+}
+
+export function approvalRequired(t: ApprovalInput): boolean {
+  const p = key(t.priority);
+  if (p !== "low" && p !== "medium") return true;
+  if (t.escalationRequired === true || key(t.escalationRequired) === "true") return true;
+  if (key(t.kbStatus) === "not_covered") return true;
+  if (typeof t.intakeIssue === "string" && t.intakeIssue.trim()) return true;
+  return false;
 }
 
 /**
@@ -90,7 +108,7 @@ export function approvalRequired(priority: unknown): boolean {
  * anyone, so it is not counted or labelled as such.
  */
 export function isAwaitingReview(t: SupportTicketRecord): boolean {
-  return approvalRequired(t.priority) && key(t.reviewStatus) === "awaiting_review";
+  return approvalRequired(t) && key(t.reviewStatus) === "awaiting_review";
 }
 
 export function isResolved(t: SupportTicketRecord): boolean {

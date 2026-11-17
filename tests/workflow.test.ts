@@ -6,6 +6,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { approvalRequired } from "@/lib/overview";
+import { serializeTicket } from "@/lib/ticket-serialization";
 
 const read = (p: string) => readFileSync(new URL(`../n8n/${p}`, import.meta.url), "utf8");
 const wf = JSON.parse(read("ai-support-desk-automation.json"));
@@ -30,7 +32,10 @@ const model = (obj: unknown) => [{ json: { content: { parts: [{ text: typeof obj
 const form = [{ json: { "Your Name": "Ada", "Your Email": "ada@example.com", "What is it you would like us to fix ?": "App crashes" } }];
 const classification = (priority: string) => model({ category: "Bug", reason: "r", sentiment: "Negative", priority, summary: "s" });
 const evaluation = model({ kbStatus: "covered", relevantSection: "Crash", coverageReason: "c", supportedSteps: ["Reinstall"], unsupportedParts: [], escalationRequired: false, customerResponse: "Hello Ada" });
-const ctx = (priority: string) => ({ nodes: { "Form Trigger": form, "Message a model": classification(priority), "Message a model1": evaluation } });
+const kbOk = [{ json: { articleCount: 2, kbUnavailable: false } }];
+const ctx = (priority: string) => ({ nodes: { "Form Trigger": form, "Message a model": classification(priority), "Select active articles": kbOk, "Message a model1": evaluation } });
+// What a Gemini node returns when it fails with "continue on error".
+const geminiError = [{ json: { error: "503 The model is overloaded" } }];
 
 test("N articles in -> exactly ONE item out of 'Select active articles' (no fan-out)", () => {
   const out = run("select-active-articles.js", { input: [article({ _id: "1" }), article({ _id: "2" }), article({ _id: "3" })] });
@@ -82,11 +87,151 @@ test("routing fields are decided once: High/Urgent escalate; Low/Medium do not",
   }
 });
 
-test("'Build ticket' tolerates a Markdown fence and fails loudly on garbage (no silent empty ticket)", () => {
+test("'Build ticket' tolerates a Markdown fence", () => {
   const fenced = { nodes: { ...ctx("Low").nodes, "Message a model": model("```json\n" + JSON.stringify({ category: "Bug", reason: "r", sentiment: "Neutral", priority: "Low", summary: "s" }) + "\n```") } };
   assert.equal(run("build-ticket.js", fenced)[0].json.priority, "Low");
-  const bad = { nodes: { ...ctx("Low").nodes, "Message a model1": model("not json") } };
-  assert.throws(() => run("build-ticket.js", bad), /not valid JSON/);
+});
+
+/* ---- failure handling: a submission is never lost, nothing is invented ---- */
+
+const build = (nodes: Record<string, Item[]>) => {
+  const out = run("build-ticket.js", { nodes: { ...ctx("Low").nodes, ...nodes } });
+  assert.equal(out.length, 1, "exactly one ticket");
+  return out[0].json;
+};
+const assertManualWithOriginal = (t: Record<string, any>) => {
+  assert.equal(t.customerName, "Ada");
+  assert.equal(t.customerEmail, "ada@example.com");
+  assert.equal(t.message, "App crashes");
+  assert.equal(t.escalationStatus, "required");
+  assert.ok(t.escalatedAt);
+  assert.equal(approvalRequired(t), true);
+  assert.equal("customerResponse" in t, false, "no customer response is invented");
+  assert.equal("aiResponse" in t, false);
+};
+
+test("classification failure (Gemini error, garbage, empty) still creates ONE manual-handling ticket with no invented fields", () => {
+  for (const bad of [geminiError, model("not json"), model(""), model("[1,2]"), [{ json: {} }]]) {
+    const t = build({ "Message a model": bad });
+    assertManualWithOriginal(t);
+    assert.match(t.intakeIssue, /^classification_(failed|invalid)$/);
+    for (const f of ["priority", "category", "sentiment", "summary", "reason"]) assert.equal(f in t, false, `${f} must not be invented`);
+  }
+});
+
+test("evaluation failure keeps the real classification, stores no response, requires manual handling", () => {
+  for (const bad of [geminiError, model("not json"), model({ kbStatus: "covered" }), model({ kbStatus: "maybe", escalationRequired: false, customerResponse: "x" })]) {
+    const t = build({ "Message a model": classification("Low"), "Message a model1": bad });
+    assertManualWithOriginal(t);
+    assert.match(t.intakeIssue, /^evaluation_(failed|invalid)$/);
+    assert.equal(t.priority, "Low");
+    assert.equal(t.category, "Bug");
+    assert.equal(t.escalationRequired, true);
+    assert.equal("kbStatus" in t, false, "an evaluation that never happened is not recorded as one");
+  }
+});
+
+test("both models failing and a failed knowledge-base read still produce one ticket", () => {
+  const t = build({ "Message a model": geminiError, "Message a model1": geminiError, "Select active articles": [{ json: { articleCount: 0, kbUnavailable: true } }] });
+  assertManualWithOriginal(t);
+  assert.equal(t.intakeIssue, "classification_failed");
+  const kbDown = build({ "Select active articles": [{ json: { articleCount: 0, kbUnavailable: true } }] });
+  assert.equal(kbDown.intakeIssue, "knowledge_base_unavailable");
+  assert.equal(kbDown.kbStatus, "not_covered");
+  assert.equal("customerResponse" in kbDown, false);
+});
+
+test("a failed Firestore read is flagged, not mistaken for an empty knowledge base", () => {
+  const out = run("select-active-articles.js", { input: [{ json: { error: "permission denied" } }] })[0].json;
+  assert.equal(out.kbUnavailable, true);
+  assert.equal(out.articleCount, 0);
+  const empty = run("select-active-articles.js", { input: [{ json: {} }] })[0].json;
+  assert.equal(empty.kbUnavailable, false);
+});
+
+/* ---- priority validation and the shared approval rule ---- */
+
+test("priority and category are normalised; anything unrecognised is NOT guessed and needs a human", () => {
+  const ok = build({ "Message a model": model({ category: " feature  request ", reason: "r", sentiment: "NEGATIVE", priority: " medium ", summary: "s" }) });
+  assert.equal(ok.priority, "Medium");
+  assert.equal(ok.category, "Feature Request");
+  assert.equal(ok.sentiment, "Negative");
+  assert.equal(ok.escalationStatus, "not_required");
+  for (const priority of ["Critical", "normal", "moderate", "P1", "", null, 3, "Highest"]) {
+    const t = build({ "Message a model": model({ category: "Bug", reason: "r", sentiment: "Neutral", priority, summary: "s" }) });
+    assert.equal(t.escalationStatus, "required", `priority ${JSON.stringify(priority)}`);
+    assert.equal("priority" in t, false, "an invalid priority is not stored");
+    assert.equal(t.intakeIssue, "classification_invalid");
+    assert.equal(approvalRequired(t), true);
+  }
+  const badCategory = build({ "Message a model": model({ category: "Billing", reason: "r", sentiment: "Neutral", priority: "Low", summary: "s" }) });
+  assert.equal("category" in badCategory, false);
+  assert.equal(badCategory.escalationStatus, "required");
+  assert.equal(badCategory.priority, "Low");
+});
+
+test("lower-case high/urgent are still escalated (the old exact-match routing let them through)", () => {
+  for (const p of ["high", "URGENT", " High "]) {
+    const t = build({ "Message a model": classification(p) });
+    assert.equal(t.escalationStatus, "required");
+    assert.equal(t.priority, p.trim()[0].toUpperCase() + p.trim().slice(1).toLowerCase());
+  }
+});
+
+test("knowledge-base coverage overrides Low/Medium automatic handling", () => {
+  const ev = (o: Record<string, unknown>) => model({ kbStatus: "covered", relevantSection: "S", coverageReason: "c", supportedSteps: ["Step"], unsupportedParts: [], escalationRequired: false, customerResponse: "Hello Ada", ...o });
+  // no active articles at all: not_covered, the model's text is thrown away
+  const none = build({ "Select active articles": [{ json: { articleCount: 0, kbUnavailable: false } }], "Message a model1": ev({}) });
+  assert.equal(none.kbStatus, "not_covered");
+  assert.equal(none.escalationRequired, true);
+  assert.deepEqual(none.supportedSteps, []);
+  assert.equal("customerResponse" in none, false, "no invented automatic answer");
+  assert.equal(none.escalationStatus, "required");
+  assert.equal("intakeIssue" in none, false, "an empty knowledge base is not a failure");
+  // model says not_covered but (wrongly) lists steps and escalationRequired false: enforced
+  const nc = build({ "Message a model1": ev({ kbStatus: "not_covered", escalationRequired: false, supportedSteps: ["Invented"] }) });
+  assert.deepEqual(nc.supportedSteps, []);
+  assert.equal(nc.escalationRequired, true);
+  assert.equal(nc.escalationStatus, "required");
+  // escalationRequired true overrides a covered Low ticket
+  assert.equal(build({ "Message a model1": ev({ escalationRequired: true }) }).escalationStatus, "required");
+  // only the fully-supported Low/Medium case is automatic
+  const auto = build({ "Message a model1": ev({}) });
+  assert.equal(auto.escalationStatus, "not_required");
+  assert.equal("escalatedAt" in auto, false);
+  assert.equal(auto.customerResponse, "Hello Ada");
+  // partially covered, nothing left to investigate: allowed
+  assert.equal(build({ "Message a model1": ev({ kbStatus: "partially_covered" }) }).escalationStatus, "not_required");
+  // High/Urgent always need a human, even when fully covered
+  for (const p of ["High", "Urgent"]) assert.equal(build({ "Message a model": classification(p), "Message a model1": ev({}) }).escalationStatus, "required");
+});
+
+test("n8n routing and the dashboard approval rule agree on every combination", () => {
+  const priorities = ["Low", "Medium", "High", "Urgent", "Critical", null];
+  const evals: [string, any][] = [
+    ["covered", { kbStatus: "covered", relevantSection: "S", coverageReason: "c", supportedSteps: ["a"], unsupportedParts: [], escalationRequired: false, customerResponse: "Hi" }],
+    ["covered+escalate", { kbStatus: "covered", relevantSection: "S", coverageReason: "c", supportedSteps: ["a"], unsupportedParts: [], escalationRequired: true, customerResponse: "Hi" }],
+    ["not_covered", { kbStatus: "not_covered", relevantSection: null, coverageReason: "c", supportedSteps: [], unsupportedParts: ["x"], escalationRequired: true, customerResponse: "Hi" }],
+    ["garbage", "nope"],
+  ];
+  for (const p of priorities) for (const [label, e] of evals) for (const articleCount of [0, 3]) {
+    const t = build({
+      "Message a model": p === null ? geminiError : classification(p as string),
+      "Message a model1": model(e),
+      "Select active articles": [{ json: { articleCount, kbUnavailable: false } }],
+    });
+    const stored = serializeTicket("t", t);
+    assert.equal(approvalRequired(stored), t.escalationStatus === "required", `priority=${p} eval=${label} articles=${articleCount}`);
+  }
+});
+
+test("dashboard rule: only Low/Medium without contradicting flags is automatic; no priority aliases", () => {
+  assert.equal(approvalRequired({ priority: "Low" }), false);
+  assert.equal(approvalRequired({ priority: "medium", kbStatus: "covered", escalationRequired: false }), false);
+  assert.equal(approvalRequired({ priority: "Low", kbStatus: "not_covered" }), true);
+  assert.equal(approvalRequired({ priority: "Low", escalationRequired: true }), true);
+  assert.equal(approvalRequired({ priority: "Low", intakeIssue: "evaluation_failed" }), true);
+  for (const p of ["High", "Urgent", "normal", "moderate", "critical", "", null, undefined]) assert.equal(approvalRequired({ priority: p }), true, String(p));
 });
 
 test("graph: single linear path, ONE Firestore create, no upsert, every connection resolves", () => {

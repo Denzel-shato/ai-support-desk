@@ -232,7 +232,7 @@ function TicketDetailBody({
                 <Field label="Escalated at">{t.escalatedLabel}</Field>
               )}
               {/* Low/Medium ignore any stored reviewStatus (n8n sets it on those too). */}
-              {!approvalRequired(t.priority) ? (
+              {!approvalRequired(t) ? (
                 <Field label="Review status">Not required</Field>
               ) : (
                 t.reviewStatus && <Field label="Review status">{t.reviewStatus}</Field>

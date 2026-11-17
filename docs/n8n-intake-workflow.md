@@ -38,6 +38,30 @@ aggregation, because a Code node in "all items" mode does not preserve n8n's ite
 6. The workflow is exported **inactive**, credentials are referenced by name only (re-select them after
    import), and the instance ID, webhook IDs and the personal email address were removed.
 
+## Failure handling and routing rules (phase 4A)
+
+The three Gemini/Firestore-read nodes are set to **continue on error**, and `Build ticket` never throws:
+
+| Situation | Result |
+|---|---|
+| Classification fails (error, empty, not JSON) | One ticket with ONLY the customer's submission, `intakeIssue: classification_failed`, `escalationStatus: required`. No priority/category/summary/response is invented; the evaluation output is ignored too. |
+| Evaluation fails or is malformed | Real classification kept; `intakeIssue: evaluation_failed` / `evaluation_invalid`; no `kbStatus`, no response; escalated. |
+| Knowledge-base read fails | `intakeIssue: knowledge_base_unavailable`, `kbStatus: not_covered`, no response; escalated. (A failed read is distinguished from an empty collection.) |
+| No active articles | `kbStatus: not_covered`, `escalationRequired: true`, model text discarded, escalated. Not an `intakeIssue`. |
+| Priority/category not one of the known values | Normalised by case/spacing only; otherwise NOT stored and `intakeIssue: classification_invalid`; escalated. `critical`, `normal`, `P1` are not mapped. |
+| `kbStatus: not_covered` | Steps forced to `[]`, `escalationRequired` forced `true`; escalated. |
+| `escalationRequired: true` | Escalated, even for Low/Medium. |
+| High / Urgent | Always escalated (case-insensitive, so `high` is no longer missed). |
+
+**Escalated = staff email only; the customer gets nothing until an agent approves a reply in the dashboard.** The
+customer acknowledgement is sent only when: Low/Medium, `kbStatus` covered/partially_covered, `escalationRequired`
+false, no `intakeIssue`, and a response exists.
+
+The dashboard uses the same rule (`approvalRequired` in `src/lib/overview.ts`, applied to the whole ticket, no priority
+aliases) and a test runs both over every priority x evaluation x article-count combination to keep them equal.
+New ticket field: `intakeIssue` (string, only on failed/invalid intake). Existing tickets are unaffected, except that a
+legacy Low/Medium ticket stored with `kbStatus: not_covered` or `escalationRequired: true` now counts as needing review.
+
 ## What is verified and what is not
 
 Verified by `npm test` (runs the Code-node sources in plain Node with a stand-in for n8n's `$`):
@@ -53,6 +77,8 @@ email templates exists; HTML is escaped.
   tickets** (it is absent from the item; confirm the document has no `escalatedAt` field of the wrong type).
 - The Create node's output carries `_id` and the stored fields so the email expressions resolve.
 - Gmail sends HTML as before and the escaped text renders correctly.
+- That "continue on error" on the Gemini and Firestore nodes delivers an item with an `error` field in your n8n version (the code treats a missing/invalid `content.parts[0].text` as a failure either way).
+- That omitted fields (`intakeIssue`, `priority` on a failed classification, ...) are really omitted by the Create node.
 - Behaviour with a very large knowledge base (all active articles go into one prompt: watch the token limit).
 
 ## Suggested first test

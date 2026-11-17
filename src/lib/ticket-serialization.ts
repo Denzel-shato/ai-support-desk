@@ -100,6 +100,7 @@ export const TICKET_API_FIELDS = [
   "supportedSteps",
   "unsupportedParts",
   "escalationRequired",
+  "intakeIssue",
   "customerResponse",
   "aiResponse",
   "status",

@@ -15,6 +15,7 @@ const list = (v) => (Array.isArray(v) ? v : typeof v === 'string' && v.trim() ? 
 
 const steps = list(t.supportedSteps);
 const unsupported = list(t.unsupportedParts);
+const na = (v) => (v === undefined || v === null || v === '' ? 'Not available' : v);
 const cell = 'border-top:1px solid #ece6dc;';
 
 const stepsHtml = steps.length
@@ -35,13 +36,13 @@ return [
         customerName: esc(t.customerName),
         customerEmail: esc(t.customerEmail),
         message: esc(t.message),
-        category: esc(t.category),
-        priority: esc(t.priority),
-        sentiment: esc(t.sentiment),
-        summary: esc(t.summary),
-        kbStatus: esc(t.kbStatus),
+        category: esc(na(t.category)),
+        priority: esc(na(t.priority)),
+        sentiment: esc(na(t.sentiment)),
+        summary: esc(na(t.summary)),
+        kbStatus: esc(na(t.kbStatus)),
         relevantSection: esc(t.relevantSection ?? 'None'),
-        coverageReason: esc(t.coverageReason),
+        coverageReason: esc(na(t.coverageReason)),
         escalationReason: esc(t.escalationReason),
         escalationStatus: esc(t.escalationStatus),
         customerResponse: esc(t.customerResponse),

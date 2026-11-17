@@ -1,5 +1,12 @@
 # Changelog
 
+## Audit remediation, phase 4A (intake reliability and routing)
+
+- **No more lost submissions.** Gemini and knowledge-base-read failures create a manual-handling ticket (original submission, `intakeIssue`, escalated, no invented classification or response) instead of aborting the run.
+- **Strict priority/category validation** and one shared approval rule: only Low/Medium without `escalationRequired`, `not_covered` or an `intakeIssue` is automatic; everything else needs a human, in both n8n routing and the dashboard (`approvalRequired(ticket)`, no priority aliases).
+- **Knowledge-base coverage enforced:** no active articles / `not_covered` / `escalationRequired` override automatic handling; invented steps are stripped.
+- Proposed workflow JSON regenerated (still not imported or run). New optional ticket field `intakeIssue`.
+
 ## Audit remediation, phase 3 (response lifecycle)
 
 - **Late results can't overwrite a newer attempt.** A retry reuses the idempotency key, so recording an outcome now also requires the attempt number to match (ticket and follow-up).

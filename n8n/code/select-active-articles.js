@@ -15,12 +15,16 @@ const keywords = (a) =>
     ? a.keywords.filter((k) => typeof k === 'string' && k.trim()).join(', ')
     : text(a.keywords);
 
-const articles = $input
-  .all()
+const items = $input.all();
+// The Firestore node is set to "continue on error": a failed read arrives as an
+// item carrying `error`. That must not be mistaken for "no articles exist".
+const kbUnavailable = items.some((item) => item.json && item.json.error);
+
+const articles = items
   .map((item) => item.json)
   .filter((a) => a && isTrue(a.active) && text(a.content));
 
-const knowledgeBase = articles.length
+const knowledgeBase = articles.length && !kbUnavailable
   ? articles
       .map((a, i) =>
         [
@@ -40,7 +44,8 @@ return [
   {
     json: {
       knowledgeBase,
-      articleCount: articles.length,
+      articleCount: kbUnavailable ? 0 : articles.length,
+      kbUnavailable,
       articleTitles: articles.map((a) => text(a.title) || a._id || 'unknown'),
     },
   },
