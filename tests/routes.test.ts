@@ -24,6 +24,31 @@ const routes: [string, string, () => Promise<{ default?: never } & Record<string
   ["auth/session", "GET", () => import("@/app/api/auth/session/route"), "GET"],
 ];
 
+test("every API route file is in the unauthenticated-rejection list (a new route can't ship unprotected unnoticed)", async () => {
+  const { readdirSync, statSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const found: string[] = [];
+  const walk = (dir: string) => {
+    for (const name of readdirSync(dir)) {
+      const full = join(dir, name);
+      if (statSync(full).isDirectory()) walk(full);
+      else if (name === "route.ts") found.push(full.split("src/app/api/")[1].replace(/\/route\.ts$/, ""));
+    }
+  };
+  walk(join(process.cwd(), "src/app/api"));
+  // login and logout are the only routes that are meant to work signed out.
+  const open = new Set(["auth/login", "auth/logout"]);
+  const sources = routes.map(([, , load]) => String(load));
+  for (const f of found) {
+    if (open.has(f)) continue;
+    assert.ok(
+      sources.some((src) => src.includes(`@/app/api/${f}/route`)),
+      `API route "${f}" is not covered by the unauthenticated-access test`,
+    );
+  }
+  assert.ok(found.length >= 14);
+});
+
 for (const configured of [true, false]) {
   test(`unauthenticated requests are rejected by every API route (auth ${configured ? "configured" : "NOT configured"})`, async () => {
     const saved = { ...process.env };
