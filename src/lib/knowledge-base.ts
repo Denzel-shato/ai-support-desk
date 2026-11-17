@@ -46,6 +46,7 @@ function toKeywords(value: unknown): string[] {
 export function toKnowledgeArticle(
   id: string,
   data: Record<string, unknown>,
+  version: string | null = null,
 ): KnowledgeArticle {
   return {
     id,
@@ -55,6 +56,7 @@ export function toKnowledgeArticle(
     keywords: toKeywords(data.keywords),
     content: typeof data.content === "string" ? data.content : "",
     updatedAt: toIsoOrNull(data.updatedAt),
+    version,
   };
 }
 
@@ -373,7 +375,13 @@ export function validateArticleInput(
  */
 export type ArticleUpdate =
   | { kind: "active"; active: boolean }
-  | { kind: "full"; value: ArticleInput };
+  | {
+      kind: "full";
+      /** `active` is only present when the request said so: omitting it leaves it unchanged. */
+      value: Omit<ArticleInput, "active"> & { active?: boolean };
+      /** The `version` the editor loaded; null skips the concurrency check. */
+      expectedVersion: string | null;
+    };
 
 export function parseArticleUpdate(
   raw: unknown,
@@ -388,12 +396,89 @@ export function parseArticleUpdate(
     }
   }
   const parsed = validateArticleInput(raw);
-  return parsed.ok
-    ? { ok: true, update: { kind: "full", value: parsed.value } }
-    : parsed;
+  if (!parsed.ok) return parsed;
+
+  const o = raw as Record<string, unknown>;
+  // An omitted `active` must NOT default to true here (that would silently
+  // reactivate a deactivated article); validateArticleInput's default is for
+  // creation only.
+  const activeGiven = typeof o.active === "boolean";
+  const { active, ...rest } = parsed.value;
+
+  let expectedVersion: string | null = null;
+  if (o.expectedVersion !== undefined && o.expectedVersion !== null) {
+    if (typeof o.expectedVersion !== "string" || Number.isNaN(Date.parse(o.expectedVersion))) {
+      return { ok: false, errors: { form: "The article version is not valid. Reload and try again." } };
+    }
+    expectedVersion = o.expectedVersion;
+  }
+  return {
+    ok: true,
+    update: {
+      kind: "full",
+      value: activeGiven ? { ...rest, active } : rest,
+      expectedVersion,
+    },
+  };
+}
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+/**
+ * A new article plus the optional `requestId` the form generated for this
+ * submission. The server uses it as the document ID, so repeating the same
+ * request (a double-click, a retry after a dropped connection) can never
+ * create a second document.
+ */
+export function parseArticleCreate(
+  raw: unknown,
+):
+  | { ok: true; value: ArticleInput; requestId: string | null }
+  | { ok: false; errors: ArticleErrors } {
+  const parsed = validateArticleInput(raw);
+  if (!parsed.ok) return parsed;
+  const id = (raw as Record<string, unknown>).requestId;
+  if (id !== undefined && id !== null) {
+    if (typeof id !== "string" || !UUID.test(id)) {
+      return { ok: false, errors: { form: "The request ID is not valid." } };
+    }
+    return { ok: true, value: parsed.value, requestId: id.toLowerCase() };
+  }
+  return { ok: true, value: parsed.value, requestId: null };
+}
+
+/** Case- and spacing-insensitive form used to compare titles and categories. */
+function norm(value: string | null): string {
+  return (value ?? "").normalize("NFKC").trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+/**
+ * An existing article with the same title AND category (ignoring case and
+ * spacing), or null. `excludeId` skips the article being edited.
+ */
+export function findDuplicateArticle(
+  articles: Pick<KnowledgeArticle, "id" | "title" | "category">[],
+  input: { title: string; category: string },
+  excludeId?: string,
+): { id: string; title: string | null } | null {
+  const t = norm(input.title);
+  const c = norm(input.category);
+  for (const a of articles) {
+    if (a.id === excludeId) continue;
+    if (norm(a.title) === t && norm(a.category) === c) return { id: a.id, title: a.title };
+  }
+  return null;
 }
 
 /** The Firestore fields an update writes. */
 export function updateFields(update: ArticleUpdate): Record<string, unknown> {
-  return update.kind === "active" ? { active: update.active } : { ...update.value };
+  if (update.kind === "active") return { active: update.active };
+  const { title, category, keywords, content, active } = update.value;
+  return {
+    title,
+    category,
+    keywords,
+    content,
+    ...(active === undefined ? {} : { active }),
+  };
 }

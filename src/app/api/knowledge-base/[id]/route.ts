@@ -1,4 +1,5 @@
 import { connection, NextResponse } from "next/server";
+import { requireAuth } from "@/lib/auth/require-auth";
 import {
   InvalidArticleIdError,
   updateKnowledgeArticle,
@@ -12,7 +13,9 @@ import { errorResponse, NO_STORE } from "@/lib/ticket-api-errors";
 /**
  * PATCH /api/knowledge-base/[id]
  * Body: either `{ active: boolean }` (activate / deactivate) or the full edit
- * `{ title, category, keywords, content, active? }`.
+ * `{ title, category, keywords, content, active?, expectedVersion? }`. An
+ * omitted `active` leaves it unchanged; `expectedVersion` (from the article
+ * the editor loaded) makes a stale edit fail with 409 `article_modified`.
  *
  * Updates the existing document in place: the ID is unchanged, nothing is
  * created (404 `article_not_found` if it doesn't exist) and nothing is deleted.
@@ -27,6 +30,7 @@ export async function PATCH(
   await connection();
 
   try {
+    await requireAuth(request);
     const { id } = await context.params;
     if (!isValidDocumentId(id)) throw new InvalidArticleIdError();
 

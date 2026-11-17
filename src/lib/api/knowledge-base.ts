@@ -1,19 +1,19 @@
-import { requestJson, TicketsApiError } from "@/lib/api/tickets";
+import { redirectIfSignedOut, requestJson, TicketsApiError } from "@/lib/api/tickets";
 import type { ArticleInput } from "@/lib/knowledge-base";
 import type { KnowledgeArticle } from "@/lib/types";
 
 /** Browser-side client for GET /api/knowledge-base. Pure fetching. */
 export async function fetchKnowledgeArticles(
   signal?: AbortSignal,
-): Promise<KnowledgeArticle[]> {
-  const { body, status } = await requestJson("/api/knowledge-base", signal);
+): Promise<{ articles: KnowledgeArticle[]; truncated: boolean }> {
+  const { body, status, truncated } = await requestJson("/api/knowledge-base", signal);
   if (!Array.isArray(body)) {
     throw new TicketsApiError("The server returned data in an unexpected format.", {
       code: "invalid_response",
       status,
     });
   }
-  return body as KnowledgeArticle[];
+  return { articles: body as KnowledgeArticle[], truncated };
 }
 
 async function send(
@@ -39,6 +39,7 @@ async function send(
   } catch {
     body = null;
   }
+  redirectIfSignedOut(response);
   if (!response.ok) {
     const err = (body as { error?: { code?: string; message?: string; fields?: Record<string, string> } } | null)?.error;
     throw new TicketsApiError(
@@ -57,11 +58,14 @@ async function send(
 }
 
 /** Creates an article. Throws TicketsApiError (with `fields` for validation errors). */
-export function createKnowledgeArticle(input: ArticleInput): Promise<KnowledgeArticle> {
+export function createKnowledgeArticle(
+  input: ArticleInput,
+  requestId: string,
+): Promise<KnowledgeArticle> {
   return send(
     "/api/knowledge-base",
     "POST",
-    input,
+    { ...input, requestId },
     "Couldn't reach the dashboard server. Your article wasn't saved; check your connection and try again.",
   );
 }
@@ -70,11 +74,12 @@ export function createKnowledgeArticle(input: ArticleInput): Promise<KnowledgeAr
 export function updateKnowledgeArticle(
   id: string,
   input: ArticleInput,
+  expectedVersion: string | null,
 ): Promise<KnowledgeArticle> {
   return send(
     `/api/knowledge-base/${encodeURIComponent(id)}`,
     "PATCH",
-    input,
+    expectedVersion ? { ...input, expectedVersion } : input,
     "Couldn't reach the dashboard server. Your changes weren't saved; check your connection and try again.",
   );
 }

@@ -16,6 +16,8 @@ export interface UseKnowledgeBaseResult {
   error: TicketsApiError | null;
   loading: boolean;
   refreshing: boolean;
+  /** The server hit its safety cap: the list is incomplete. */
+  truncated: boolean;
   refresh: () => void;
   /** Shows a just-created article at once, then re-reads Firestore to confirm. */
   addArticle: (article: KnowledgeArticle) => void;
@@ -36,6 +38,7 @@ export function useKnowledgeBase(): UseKnowledgeBaseResult {
   const [error, setError] = useState<TicketsApiError | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [truncated, setTruncated] = useState(false);
   const controller = useRef<AbortController | null>(null);
 
   const request = useCallback(() => {
@@ -46,7 +49,8 @@ export function useKnowledgeBase(): UseKnowledgeBaseResult {
     fetchKnowledgeArticles(current.signal)
       .then((data) => {
         if (current.signal.aborted) return;
-        setArticles(data);
+        setArticles(data.articles);
+        setTruncated(data.truncated);
         setError(null);
       })
       .catch((err: unknown) => {
@@ -83,5 +87,5 @@ export function useKnowledgeBase(): UseKnowledgeBaseResult {
   );
 
   // Both add a new ID or replace an existing one; the ID is the identity.
-  return { articles, error, loading, refreshing, refresh, addArticle, replaceArticle: addArticle };
+  return { articles, error, loading, refreshing, truncated, refresh, addArticle, replaceArticle: addArticle };
 }

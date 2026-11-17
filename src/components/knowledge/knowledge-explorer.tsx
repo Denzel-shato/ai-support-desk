@@ -22,6 +22,8 @@ import {
 } from "@/lib/knowledge-base";
 import { formatDateTime } from "@/lib/ticket-detail";
 import type { KnowledgeArticle } from "@/lib/types";
+import { TruncationNotice } from "@/components/ui/truncation-notice";
+import { MAX_ARTICLES } from "@/lib/limits";
 import { ArticleFormDialog } from "./article-form-dialog";
 import { MarkdownContent } from "./markdown-content";
 import { KnowledgeEmpty, KnowledgeError, KnowledgeSkeleton } from "./knowledge-states";
@@ -175,7 +177,7 @@ function ArticleReader({
 }
 
 export function KnowledgeExplorer() {
-  const { articles, error, loading, refreshing, refresh, addArticle, replaceArticle } =
+  const { articles, error, loading, refreshing, truncated, refresh, addArticle, replaceArticle } =
     useKnowledgeBase();
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -193,8 +195,8 @@ export function KnowledgeExplorer() {
   }, [notice]);
 
   /** Saves via the API; throws on failure so the form stays open with its data. */
-  async function create(input: ArticleInput) {
-    const article = await createKnowledgeArticle(input);
+  async function create(input: ArticleInput, requestId: string) {
+    const article = await createKnowledgeArticle(input, requestId);
     addArticle(article);
     setQuery(""); // make sure the new article isn't filtered out
     setSelectedId(article.id);
@@ -205,7 +207,7 @@ export function KnowledgeExplorer() {
   /** Saves edits to the same document; throws on failure so the form keeps the input. */
   async function saveEdit(input: ArticleInput) {
     if (!editing) return;
-    const article = await updateKnowledgeArticle(editing.id, input);
+    const article = await updateKnowledgeArticle(editing.id, input, editing.version);
     replaceArticle(article);
     setNotice({ kind: "success", message: `Changes saved: ${article.title ?? article.id}` });
     setEditing(null);
@@ -271,6 +273,8 @@ export function KnowledgeExplorer() {
           </Button>
         </div>
       </section>
+
+      {truncated && <TruncationNotice noun="articles" limit={MAX_ARTICLES} />}
 
       {notice && (
         <div

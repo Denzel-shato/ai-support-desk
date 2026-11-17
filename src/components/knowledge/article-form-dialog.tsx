@@ -85,10 +85,12 @@ export function ArticleFormDialog({
   /** Set to edit this article; omit to create a new one. */
   article?: KnowledgeArticle;
   existingCategories: string[];
-  onSubmit: (input: ArticleInput) => Promise<void>;
+  /** `requestId` is stable for this dialog: a repeat of the same submission can't create a second article. */
+  onSubmit: (input: ArticleInput, requestId: string) => Promise<void>;
   onClose: () => void;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
+  const requestId = useRef<string>(crypto.randomUUID());
   const editing = article !== undefined;
   // The stored category is kept exactly as written: if it isn't one of the
   // options (e.g. different capitalisation), it is shown as a custom value.
@@ -174,7 +176,7 @@ export function ArticleFormDialog({
     setFormError(null);
     setSaving(true);
     try {
-      await onSubmit(parsed.value);
+      await onSubmit(parsed.value, requestId.current);
     } catch (error) {
       if (error instanceof TicketsApiError) {
         setErrors(error.fields as ArticleErrors);
