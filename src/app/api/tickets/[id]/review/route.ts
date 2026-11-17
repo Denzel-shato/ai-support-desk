@@ -1,4 +1,5 @@
 import { connection, NextResponse } from "next/server";
+import { requireAuth } from "@/lib/auth/require-auth";
 import { applyReviewAction } from "@/lib/firestore-ticket-response";
 import { InvalidTicketIdError, isValidDocumentId } from "@/lib/firestore-tickets";
 import { readJsonBody } from "@/lib/request-guard";
@@ -21,6 +22,7 @@ export async function POST(
   await connection();
 
   try {
+    await requireAuth(request);
     const { id } = await context.params;
     if (!isValidDocumentId(id)) throw new InvalidTicketIdError();
 

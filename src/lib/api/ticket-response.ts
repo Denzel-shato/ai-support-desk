@@ -1,6 +1,6 @@
-import { TicketsApiError } from "@/lib/api/tickets";
+import { redirectIfSignedOut, TicketsApiError } from "@/lib/api/tickets";
 import type { FollowUpMessage } from "@/lib/communications";
-import type { ReviewAction } from "@/lib/response-workflow";
+import type { ReconcileOutcome, ReviewAction } from "@/lib/response-workflow";
 import type { ApiErrorBody, SupportTicketRecord } from "@/lib/types";
 
 /**
@@ -45,6 +45,7 @@ async function post(
     body = null;
   }
 
+  redirectIfSignedOut(response);
   if (!response.ok) {
     if (isApiErrorBody(body)) {
       throw new TicketsApiError(body.error.message, {
@@ -94,11 +95,18 @@ export interface SendResult {
   warning?: string;
 }
 
-/** Asks the server to send the approved response. Throws on failure. */
-export async function sendResponse(id: string): Promise<SendResult> {
+/**
+ * Asks the server to send the approved response. Throws on failure. Pass
+ * `retryUnknown` only after the agent has seen that an earlier attempt's
+ * outcome is unsettled and chose to resend anyway (a duplicate is possible).
+ */
+export async function sendResponse(
+  id: string,
+  options: { retryUnknown?: boolean } = {},
+): Promise<SendResult> {
   const { body, status } = await post(
     `/api/tickets/${encodeURIComponent(id)}/send`,
-    {},
+    options.retryUnknown ? { retryUnknown: true } : {},
   );
   const obj = (body ?? {}) as Record<string, unknown>;
   if (obj.result !== "sent" && obj.result !== "queued") {
@@ -113,6 +121,25 @@ export async function sendResponse(id: string): Promise<SendResult> {
     message: typeof obj.message === "string" ? obj.message : undefined,
     warning: typeof obj.warning === "string" ? obj.warning : undefined,
   };
+}
+
+/** An agent states whether an unsettled send was delivered. */
+export async function reconcileSend(
+  id: string,
+  outcome: ReconcileOutcome,
+): Promise<SupportTicketRecord> {
+  const { body, status } = await post(
+    `/api/tickets/${encodeURIComponent(id)}/reconcile`,
+    { outcome },
+  );
+  const ticket = ticketFrom(body);
+  if (!ticket) {
+    throw new TicketsApiError("The server returned data in an unexpected format.", {
+      code: "invalid_response",
+      status,
+    });
+  }
+  return ticket;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -142,6 +169,7 @@ export async function fetchMessages(
   } catch {
     body = null;
   }
+  redirectIfSignedOut(response);
   if (!response.ok) {
     if (isApiErrorBody(body)) {
       throw new TicketsApiError(body.error.message, {
@@ -178,10 +206,14 @@ export async function sendFollowUp(
   ticketId: string,
   messageId: string,
   content?: string,
+  options: { retryUnknown?: boolean } = {},
 ): Promise<FollowUpResult> {
+  const payload: Record<string, unknown> = { messageId };
+  if (content !== undefined) payload.content = content;
+  if (options.retryUnknown) payload.retryUnknown = true;
   const { body, status } = await post(
     `/api/tickets/${encodeURIComponent(ticketId)}/followups`,
-    content === undefined ? { messageId } : { messageId, content },
+    payload,
   );
   const obj = (body ?? {}) as Record<string, unknown>;
   if (obj.result !== "sent" && obj.result !== "queued") {
@@ -195,4 +227,16 @@ export async function sendFollowUp(
     warning: typeof obj.warning === "string" ? obj.warning : undefined,
     note: typeof obj.note === "string" ? obj.note : undefined,
   };
+}
+
+/** An agent states whether an unsettled follow-up was delivered. */
+export async function reconcileFollowUpSend(
+  ticketId: string,
+  messageId: string,
+  outcome: ReconcileOutcome,
+): Promise<void> {
+  await post(
+    `/api/tickets/${encodeURIComponent(ticketId)}/followups/${encodeURIComponent(messageId)}/reconcile`,
+    { outcome },
+  );
 }

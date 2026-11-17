@@ -35,9 +35,11 @@ const REVIEW_PILL: Record<ReviewStatus | "none", { label: string; bg: string; fg
 
 const DELIVERY_PILL: Record<ResponseStatus | "none", { label: string; bg: string; fg: string }> = {
   draft: { label: "Draft", bg: "#EEF0F2", fg: "#4B5563" },
-  queued: { label: "Sending…", bg: "#FDF3DC", fg: "#8A5A00" },
+  sending: { label: "Sending…", bg: "#FDF3DC", fg: "#8A5A00" },
+  queued: { label: "Awaiting confirmation", bg: "#FDF3DC", fg: "#8A5A00" },
   sent: { label: "Sent", bg: "#E5F2EB", fg: "#1F6B45" },
   failed: { label: "Failed", bg: "#FBEAE8", fg: "#9E2A20" },
+  unknown: { label: "Delivery unknown", bg: "#FDF3DC", fg: "#8A5A00" },
   none: { label: "Not sent", bg: "#EEF0F2", fg: "#4B5563" },
 };
 
@@ -147,7 +149,8 @@ function ApprovalWorkspace({
   const approved = view.reviewStatus === "approved";
   const rejected = view.reviewStatus === "rejected";
   const failed = view.responseStatus === "failed";
-  const queued = view.responseStatus === "queued";
+  const sending = view.responseStatus === "sending";
+  const unsettled = view.needsReconciliation;
   const sent = view.responseStatus === "sent";
   const tooLong = w.text.trim().length > MAX_RESPONSE_LENGTH;
 
@@ -269,30 +272,73 @@ function ApprovalWorkspace({
                 </p>
               </div>
             </div>
-          ) : queued ? (
+          ) : sending ? (
             <div className="space-y-2">
               <div
                 role="status"
                 className="flex items-start gap-2 rounded-md bg-[#FDF3DC] px-3 py-2.5 text-[13px] text-[#8A5A00]"
               >
                 <Clock className="mt-0.5 size-4 shrink-0" aria-hidden />
-                <p>
-                  A send is in progress, or was started and never confirmed. Check
-                  the status before sending again, so the customer doesn&apos;t get
-                  two emails.
-                </p>
+                <p>This response is being sent right now. It can&apos;t be sent again until that finishes.</p>
               </div>
-              <div className="flex flex-wrap gap-2">
-                <Button type="button" variant="outline" onClick={w.refresh} disabled={busy}>
-                  {w.busy === "refresh" ? <Spinner /> : <RotateCcw />}
-                  Check status
-                </Button>
-                {!w.sendBlocked && (
-                  <Button type="button" variant="ghost" onClick={w.askToSend} disabled={busy}>
-                    Retry send
+              <Button type="button" variant="outline" onClick={w.refresh} disabled={busy}>
+                {w.busy === "refresh" ? <Spinner /> : <RotateCcw />}
+                Check status
+              </Button>
+            </div>
+          ) : unsettled ? (
+            <div className="space-y-2">
+              <div
+                role="alert"
+                className="flex items-start gap-2 rounded-md bg-[#FDF3DC] px-3 py-2.5 text-[13px] text-[#8A5A00]"
+              >
+                <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden />
+                <div>
+                  <p className="font-medium">
+                    {view.responseStatus === "queued"
+                      ? "Accepted, but delivery isn't confirmed"
+                      : "We can't tell whether this was delivered"}
+                  </p>
+                  <p className="text-xs">
+                    The email may already have reached the customer. Check their
+                    mail (or the n8n execution log), then record what happened.
+                    Sending again without checking could deliver it twice.
+                  </p>
+                  {view.error && <p className="mt-1 text-xs">{view.error}</p>}
+                </div>
+              </div>
+              {w.confirmingResend ? (
+                <div className="flex flex-wrap items-center gap-2 rounded-md border border-border-strong bg-surface-muted px-3 py-2.5 text-[13px]">
+                  <span className="mr-auto">
+                    Send again to <strong className="break-all">{view.recipient}</strong>? The
+                    customer may receive this email twice.
+                  </span>
+                  <Button type="button" onClick={w.confirmResend} disabled={busy || !view.recipient}>
+                    <Send />
+                    Yes, send again
                   </Button>
-                )}
-              </div>
+                  <Button type="button" variant="outline" onClick={w.cancelResend} disabled={busy}>
+                    Cancel
+                  </Button>
+                </div>
+              ) : (
+                <div className="flex flex-wrap gap-2">
+                  <Button type="button" variant="outline" onClick={w.refresh} disabled={busy}>
+                    {w.busy === "refresh" ? <Spinner /> : <RotateCcw />}
+                    Check status
+                  </Button>
+                  <Button type="button" variant="outline" onClick={() => w.reconcile("delivered")} disabled={busy}>
+                    {w.busy === "reconcile" ? <Spinner /> : <CheckCircle2 />}
+                    It was delivered
+                  </Button>
+                  <Button type="button" variant="outline" onClick={() => w.reconcile("not_delivered")} disabled={busy}>
+                    It was not delivered
+                  </Button>
+                  <Button type="button" variant="ghost" onClick={w.askToResend} disabled={busy}>
+                    Send again anyway…
+                  </Button>
+                </div>
+              )}
             </div>
           ) : (
             <div className="space-y-2">

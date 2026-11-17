@@ -72,8 +72,25 @@ export function isEscalated(t: SupportTicketRecord): boolean {
   return key(t.escalationStatus) === "required";
 }
 
+/**
+ * Whether the AI response needs a human decision before it can be emailed.
+ * Decided by PRIORITY only, never by the stored `reviewStatus`: the n8n
+ * normal-handling branch writes "awaiting_review" for Low and Medium tickets
+ * too. Low and Medium: no. High and Urgent: yes. A missing or unrecognised
+ * priority requires approval: the safe default.
+ */
+export function approvalRequired(priority: unknown): boolean {
+  const p = normalizePriority(priority);
+  return p !== "low" && p !== "medium";
+}
+
+/**
+ * Waiting on a human decision. Only tickets that need approval can be: a Low
+ * or Medium ticket carrying a legacy "awaiting_review" is not waiting for
+ * anyone, so it is not counted or labelled as such.
+ */
 export function isAwaitingReview(t: SupportTicketRecord): boolean {
-  return key(t.reviewStatus) === "awaiting_review";
+  return approvalRequired(t.priority) && key(t.reviewStatus) === "awaiting_review";
 }
 
 export function isResolved(t: SupportTicketRecord): boolean {

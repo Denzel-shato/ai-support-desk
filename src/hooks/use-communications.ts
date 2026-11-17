@@ -1,14 +1,18 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { fetchMessages, sendFollowUp } from "@/lib/api/ticket-response";
+import {
+  fetchMessages,
+  reconcileFollowUpSend,
+  sendFollowUp,
+} from "@/lib/api/ticket-response";
 import { TicketsApiError } from "@/lib/api/tickets";
 import {
   buildHistory,
   type FollowUpMessage,
   type HistoryEntry,
 } from "@/lib/communications";
-import { validateResponseText } from "@/lib/response-workflow";
+import { validateResponseText, type ReconcileOutcome } from "@/lib/response-workflow";
 import type { SupportTicketRecord } from "@/lib/types";
 import type { Feedback } from "./use-response-workspace";
 
@@ -33,14 +37,17 @@ export interface CommunicationsState {
   busy: string | null;
   feedback: Feedback | null;
   send: () => void;
-  retry: (messageId: string) => void;
+  /** `anyway`: resend an unsettled message after the agent confirmed (duplicate possible). */
+  retry: (messageId: string, anyway?: boolean) => void;
+  reconcile: (messageId: string, outcome: ReconcileOutcome) => void;
   refresh: () => void;
 }
 
 /** Server answers that mean "the message exists on the server": stop re-sending the draft text. */
 const MESSAGE_STORED = new Set([
   "delivery_failed",
-  "delivery_timeout",
+  "delivery_unknown",
+  "delivery_unconfirmed",
   "already_sent",
   "send_in_progress",
 ]);
@@ -145,11 +152,13 @@ export function useCommunications(ticket: SupportTicketRecord): CommunicationsSt
   }, [text, ticketId, load]);
 
   const retry = useCallback(
-    async (messageId: string) => {
+    async (messageId: string, anyway = false) => {
       setBusy(messageId);
       setFeedback(null);
       try {
-        const result = await sendFollowUp(ticketId, messageId);
+        const result = await sendFollowUp(ticketId, messageId, undefined, {
+          retryUnknown: anyway,
+        });
         setFeedback(
           result.result === "sent"
             ? { kind: "success", message: "Follow-up sent. Delivery confirmed." }
@@ -157,6 +166,29 @@ export function useCommunications(ticket: SupportTicketRecord): CommunicationsSt
         );
       } catch (error) {
         setFeedback({ kind: "error", message: msg(error, "The follow-up was not sent.") });
+      } finally {
+        setBusy(null);
+        await load();
+      }
+    },
+    [ticketId, load],
+  );
+
+  const reconcile = useCallback(
+    async (messageId: string, outcome: ReconcileOutcome) => {
+      setBusy(messageId);
+      setFeedback(null);
+      try {
+        await reconcileFollowUpSend(ticketId, messageId, outcome);
+        setFeedback({
+          kind: "success",
+          message:
+            outcome === "delivered"
+              ? "Recorded as delivered (confirmed by you)."
+              : "Recorded as not delivered. You can send it again.",
+        });
+      } catch (error) {
+        setFeedback({ kind: "error", message: msg(error, "Couldn't record that.") });
       } finally {
         setBusy(null);
         await load();
@@ -182,7 +214,8 @@ export function useCommunications(ticket: SupportTicketRecord): CommunicationsSt
     busy,
     feedback,
     send: () => void send(),
-    retry: (id) => void retry(id),
+    retry: (id, anyway) => void retry(id, anyway),
+    reconcile: (id, outcome) => void reconcile(id, outcome),
     refresh: () => void refresh(),
   };
 }

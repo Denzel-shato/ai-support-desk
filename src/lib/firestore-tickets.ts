@@ -1,13 +1,15 @@
 import "server-only";
 
+import type { Firestore } from "firebase-admin/firestore";
 import { getAdminDb } from "./firebase-admin";
 import { compareByCreatedAtDesc, serializeTicket } from "./ticket-serialization";
 import type { SupportTicketRecord } from "./types";
 
 export const TICKETS_COLLECTION = "support_tickets";
 
-/** Safety cap for the demo. Revisit with pagination once volume grows. */
-export const MAX_TICKETS = 1000;
+import { MAX_TICKETS } from "./limits";
+
+export { MAX_TICKETS };
 
 const QUERY_TIMEOUT_MS = 15_000;
 
@@ -33,14 +35,25 @@ export function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
  * Firestore orderBy silently drops documents where the field is missing,
  * and tickets written by different n8n branches may not all have it.
  */
-export async function listSupportTickets(): Promise<SupportTicketRecord[]> {
+export async function listSupportTickets(
+  db: Firestore = getAdminDb(),
+): Promise<{ tickets: SupportTicketRecord[]; truncated: boolean }> {
+  // One extra document tells us whether the cap cut anything off.
   const snapshot = await withTimeout(
-    getAdminDb().collection(TICKETS_COLLECTION).limit(MAX_TICKETS).get(),
+    db.collection(TICKETS_COLLECTION).limit(MAX_TICKETS + 1).get(),
     QUERY_TIMEOUT_MS,
   );
-  return snapshot.docs
+  const truncated = snapshot.docs.length > MAX_TICKETS;
+  if (truncated) {
+    console.warn(
+      `[firestore-tickets] More than ${MAX_TICKETS} tickets exist; the dashboard shows only ${MAX_TICKETS}. Add pagination.`,
+    );
+  }
+  const tickets = snapshot.docs
+    .slice(0, MAX_TICKETS)
     .map((doc) => serializeTicket(doc.id, doc.data()))
     .sort(compareByCreatedAtDesc);
+  return { tickets, truncated };
 }
 
 /** Thrown when no `support_tickets` document has the requested ID. */

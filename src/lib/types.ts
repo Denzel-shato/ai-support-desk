@@ -56,14 +56,14 @@ export interface SupportTicketRecord {
      `customerResponse` are never modified by either. */
   /** The agent's approved (or draft) reply: what gets emailed. */
   finalResponse?: string | null;
-  /** "draft" | "queued" | "sent" | "failed": email delivery, separate from reviewStatus. */
+  /** "draft" | "sending" | "queued" | "sent" | "failed" | "unknown": email delivery, separate from reviewStatus. */
   responseStatus?: string | null;
   responseSentAt?: string | null;
   responseError?: string | null;
-  /** Idempotency key for the current send; reused across retries of the same text. */
-  responseSendId?: string | null;
-  /** When the current send was claimed; lets a stuck "queued" send be retried. */
+  /** When the current send attempt was claimed; a claim with no recorded answer reads as "unknown". */
   responseQueuedAt?: string | null;
+  /** "agent" when a person confirmed delivery by hand (reconciliation). */
+  responseConfirmedBy?: string | null;
 }
 
 /** Error body returned by GET /api/tickets on any non-2xx response. */
@@ -75,6 +75,10 @@ export interface ApiErrorBody {
     missing?: string[];
     /** Per-field validation messages (form submissions). */
     fields?: Record<string, string>;
+    /** Short ID that matches this failure to the server log (5xx only). */
+    requestId?: string;
+    /** ID of the existing document a duplicate clashed with. */
+    existingId?: string;
   };
 }
 
@@ -185,4 +189,10 @@ export interface KnowledgeArticle {
   /** Markdown-style article text, exactly as stored. */
   content: string;
   updatedAt: string | null;
+  /**
+   * Firestore's last-write time for the document, as an opaque token. An edit
+   * sends it back; if the document changed since, the save is refused (409)
+   * instead of silently overwriting someone else's change. Not a schema field.
+   */
+  version: string | null;
 }

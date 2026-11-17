@@ -3,6 +3,8 @@
 import { useMemo } from "react";
 import { RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { TruncationNotice } from "@/components/ui/truncation-notice";
+import { MAX_TICKETS } from "@/lib/limits";
 import { useTickets } from "@/hooks/use-tickets";
 import { deriveOverview } from "@/lib/overview";
 import { MetricCard } from "./metric-card";
@@ -17,7 +19,7 @@ import { RecentTicketsTable } from "./recent-tickets-table";
 import { TicketActivityChart } from "./ticket-activity-chart";
 
 export function OverviewDashboard() {
-  const { tickets, error, loading, refreshing, updatedAt, refresh } =
+  const { tickets, error, loading, refreshing, updatedAt, truncated, refresh } =
     useTickets();
 
   // Relative times ("12 min ago") are computed once per fetch.
@@ -57,6 +59,8 @@ export function OverviewDashboard() {
           </Button>
         </div>
       </section>
+
+      {truncated && <TruncationNotice noun="tickets" limit={MAX_TICKETS} />}
 
       {loading && <OverviewSkeleton />}
 

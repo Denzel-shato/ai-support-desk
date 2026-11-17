@@ -7,7 +7,12 @@ import {
   TicketsTimeoutError,
 } from "./firestore-tickets";
 import { ResponseWorkflowError } from "./response-workflow";
-import { errorResponse, ticketsErrorResponse } from "./ticket-api-errors";
+import {
+  authErrorResponse,
+  errorResponse,
+  serverError,
+  ticketsErrorResponse,
+} from "./ticket-api-errors";
 
 /**
  * Maps errors from the review and send routes to JSON responses. Workflow rule
@@ -15,6 +20,8 @@ import { errorResponse, ticketsErrorResponse } from "./ticket-api-errors";
  * reuse the ticket routes' mapping so every route reports them the same way.
  */
 export function responseErrorResponse(error: unknown, logLabel: string) {
+  const auth = authErrorResponse(error);
+  if (auth) return auth;
   if (error instanceof ResponseWorkflowError) {
     return errorResponse(
       error.status,
@@ -32,26 +39,30 @@ export function responseErrorResponse(error: unknown, logLabel: string) {
     return ticketsErrorResponse(error, logLabel);
   }
 
-  console.error(`[${logLabel}] Failed to update Firestore:`, error);
-
   const code = (error as { code?: unknown } | null)?.code;
   if (code === 7 || code === 16) {
-    return errorResponse(
+    return serverError(
       500,
       "firestore_permission_denied",
       "Firestore rejected the update. Check that the service account can write to Firestore.",
+      logLabel,
+      error,
     );
   }
   if (code === 14 || code === 4) {
-    return errorResponse(
+    return serverError(
       503,
       "firestore_unavailable",
       "Firestore is temporarily unreachable. Try again in a moment.",
+      logLabel,
+      error,
     );
   }
-  return errorResponse(
+  return serverError(
     500,
     "firestore_error",
     "Something went wrong while saving to Firestore. Nothing was sent.",
+    logLabel,
+    error,
   );
 }

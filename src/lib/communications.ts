@@ -1,12 +1,17 @@
 import {
+  AGENT_NOT_DELIVERED_MESSAGE,
+  assertCanReconcile,
   cleanRecipient,
+  effectiveStatus,
+  needsReconciliation,
   normalizeResponseStatus,
   pickOriginalAiResponse,
   ResponseWorkflowError,
-  STALE_QUEUE_MS,
-  TIMEOUT_MESSAGE,
+  UNCONFIRMED_MESSAGE,
   validateResponseText,
+  type ReconcileOutcome,
   type ResponseStatus,
+  type SendOptions,
   type WebhookOutcome,
 } from "./response-workflow";
 import { toIsoOrNull } from "./ticket-serialization";
@@ -26,7 +31,10 @@ import type { SupportTicketRecord } from "./types";
  * history as read-only entries built from those fields. Follow-ups never
  * touch those fields or `reviewStatus`/`responseStatus`.
  *
- * Pure: no React, no Firebase, no clock.
+ * Delivery statuses and the unknown-outcome rules are the same as for the
+ * initial response (see response-workflow.ts).
+ *
+ * Pure: no React, no Firebase, no clock (callers pass `nowMs`).
  */
 
 export const MESSAGES_SUBCOLLECTION = "messages";
@@ -49,6 +57,8 @@ export interface FollowUpMessage {
   queuedAt: string | null;
   sentAt: string | null;
   error: string | null;
+  /** How many times a send was attempted (1 = first try). */
+  attempts: number;
 }
 
 const MESSAGE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -66,13 +76,21 @@ function errText(value: unknown, max = 300): string | null {
 }
 
 /** Turns a stored message document into the API shape. Tolerates odd data. */
-export function toFollowUpMessage(id: string, raw: RawDoc): FollowUpMessage {
+export function toFollowUpMessage(
+  id: string,
+  raw: RawDoc,
+  nowMs: number = Date.now(),
+): FollowUpMessage {
+  const queuedAt = toIsoOrNull(raw.queuedAt);
   return {
     id,
     content: typeof raw.content === "string" ? raw.content : "",
-    status: normalizeResponseStatus(raw.status) ?? "draft",
+    // A "sending" claim that never recorded an answer reads as "unknown".
+    status: effectiveStatus(normalizeResponseStatus(raw.status), queuedAt, nowMs) ?? "draft",
+    attempts:
+      typeof raw.attempts === "number" && raw.attempts > 0 ? Math.floor(raw.attempts) : 1,
     createdAt: toIsoOrNull(raw.createdAt),
-    queuedAt: toIsoOrNull(raw.queuedAt),
+    queuedAt,
     sentAt: toIsoOrNull(raw.sentAt),
     error: errText(raw.error),
   };
@@ -92,11 +110,11 @@ export interface FollowUpClaim {
   customerName: string | null;
   /** The text to send: the stored text on a retry, never a new one. */
   content: string;
+  attempt: number;
 }
 
-function queueIsFresh(raw: RawDoc, nowMs: number): boolean {
-  const iso = toIsoOrNull(raw.queuedAt);
-  return iso ? nowMs - Date.parse(iso) < STALE_QUEUE_MS : false;
+function messageStatus(raw: RawDoc, nowMs: number): ResponseStatus | null {
+  return effectiveStatus(normalizeResponseStatus(raw.status), toIsoOrNull(raw.queuedAt), nowMs);
 }
 
 /**
@@ -113,6 +131,7 @@ export function decideFollowUpClaim(
   text: unknown,
   nowMs: number,
   nowIso: string,
+  options: SendOptions = {},
 ): FollowUpClaim {
   const recipient = cleanRecipient(ticket.customerEmail);
   if (!recipient) {
@@ -140,16 +159,18 @@ export function decideFollowUpClaim(
         type: "follow_up",
         source: "agent",
         content: v.text,
-        status: "queued",
+        status: "sending",
+        attempts: 1,
         createdAt: nowIso,
         queuedAt: nowIso,
         sentAt: null,
         error: null,
       },
+      attempt: 1,
     };
   }
 
-  const status = normalizeResponseStatus(existing.status);
+  const status = messageStatus(existing, nowMs);
   if (status === "sent") {
     throw new ResponseWorkflowError(
       409,
@@ -157,12 +178,15 @@ export function decideFollowUpClaim(
       "This follow-up has already been sent. It can't be sent twice.",
     );
   }
-  if (status === "queued" && queueIsFresh(existing, nowMs)) {
+  if (status === "sending") {
     throw new ResponseWorkflowError(
       409,
       "send_in_progress",
       "This follow-up is already being sent. Wait a moment, then check its status.",
     );
+  }
+  if (needsReconciliation(status) && !options.retryUnknown) {
+    throw new ResponseWorkflowError(409, "delivery_unconfirmed", UNCONFIRMED_MESSAGE);
   }
   const stored = validateResponseText(existing.content);
   if (!stored.ok) {
@@ -172,19 +196,25 @@ export function decideFollowUpClaim(
       "This follow-up has no stored text to send.",
     );
   }
+  const attempt =
+    (typeof existing.attempts === "number" && existing.attempts > 0
+      ? Math.floor(existing.attempts)
+      : 1) + 1;
   return {
     mode: "update",
     idempotencyKey: messageId,
     recipient,
     customerName,
     content: stored.text,
-    fields: { status: "queued", queuedAt: nowIso, error: null },
+    attempt,
+    fields: { status: "sending", queuedAt: nowIso, attempts: attempt, error: null },
   };
 }
 
 /**
- * Fields to write once n8n has answered, or null to write nothing. A message
- * already "sent" is never changed, and "unconfirmed" leaves it queued.
+ * Fields to write once n8n has answered, or null to write nothing. Only a
+ * message still in its own "sending" claim is updated: one already "sent",
+ * or reconciled by an agent meanwhile, is never changed.
  */
 export function decideFollowUpRecord(
   existing: RawDoc | null,
@@ -192,17 +222,33 @@ export function decideFollowUpRecord(
   nowIso: string,
 ): Record<string, unknown> | null {
   if (!existing) return null;
-  if (normalizeResponseStatus(existing.status) === "sent") return null;
+  if (normalizeResponseStatus(existing.status) !== "sending") return null;
   switch (outcome.kind) {
-    case "unconfirmed":
-      return null;
+    case "accepted":
+      return { status: "queued", error: null };
     case "sent":
       return { status: "sent", sentAt: outcome.sentAt ?? nowIso, error: null };
-    case "timeout":
-      return { status: "failed", error: TIMEOUT_MESSAGE };
+    case "unknown":
+      return { status: "unknown", error: outcome.message };
     case "failed":
       return { status: "failed", error: outcome.message };
   }
+}
+
+/** An agent's statement about an unsettled follow-up (same rules as the ticket's). */
+export function decideFollowUpReconcile(
+  existing: RawDoc | null,
+  outcome: ReconcileOutcome,
+  nowMs: number,
+  nowIso: string,
+): Record<string, unknown> {
+  if (!existing) {
+    throw new ResponseWorkflowError(404, "message_not_found", "That message no longer exists.");
+  }
+  assertCanReconcile(messageStatus(existing, nowMs));
+  return outcome === "delivered"
+    ? { status: "sent", sentAt: nowIso, error: null, confirmedBy: "agent" }
+    : { status: "failed", error: AGENT_NOT_DELIVERED_MESSAGE };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -241,6 +287,7 @@ function timeKey(e: HistoryEntry): number {
 export function buildHistory(
   ticket: SupportTicketRecord,
   followUps: FollowUpMessage[],
+  nowMs: number = Date.now(),
 ): HistoryEntry[] {
   const entries: HistoryEntry[] = [];
 
@@ -268,7 +315,12 @@ export function buildHistory(
       source: "agent",
       label: "Agent response",
       content: final,
-      status: normalizeResponseStatus(ticket.responseStatus) ?? "draft",
+      status:
+        effectiveStatus(
+          normalizeResponseStatus(ticket.responseStatus),
+          toIsoOrNull(ticket.responseQueuedAt),
+          nowMs,
+        ) ?? "draft",
       createdAt: null,
       sentAt: toIsoOrNull(ticket.responseSentAt),
       error: errText(ticket.responseError),

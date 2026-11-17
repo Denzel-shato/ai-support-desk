@@ -16,8 +16,11 @@ import {
   decideReviewUpdate,
   decideSendClaim,
   decideSendRecord,
+  decideTicketReconcile,
+  type ReconcileOutcome,
   type ReviewAction,
   type SendClaim,
+  type SendOptions,
   type WebhookOutcome,
 } from "./response-workflow";
 import { serializeTicket } from "./ticket-serialization";
@@ -86,14 +89,15 @@ export async function applyReviewAction(
 }
 
 /**
- * Atomically claims a send: validates the stored ticket and marks it "queued".
- * Two simultaneous requests can't both pass, because the second transaction
- * re-reads the ticket and finds it already queued.
+ * Atomically claims a send: validates the stored ticket and marks it
+ * "sending". Two simultaneous requests can't both pass, because the second
+ * transaction re-reads the ticket and finds it already "sending".
  */
 export async function claimResponseSend(
   id: string,
   db: Firestore = getAdminDb(),
   nowMs: number = Date.now(),
+  options: SendOptions = {},
 ): Promise<SendClaim> {
   const ref = ticketRef(db, id);
   return withTimeout(
@@ -105,6 +109,7 @@ export async function claimResponseSend(
         nowMs,
         new Date(nowMs).toISOString(),
         randomUUID,
+        options,
       );
       tx.update(ref, toStored(claim.fields));
       return claim;
@@ -114,8 +119,8 @@ export async function claimResponseSend(
 }
 
 /**
- * Records what n8n answered. Writes nothing when the attempt is stale, the
- * ticket is already "sent", or the outcome is unconfirmed.
+ * Records what n8n answered. Writes nothing when the attempt is stale or the
+ * ticket is no longer in this attempt's "sending" claim.
  */
 export async function recordSendOutcome(
   id: string,
@@ -139,4 +144,32 @@ export async function recordSendOutcome(
     }),
     TX_TIMEOUT_MS,
   );
+}
+
+/**
+ * An agent states whether an unsettled (queued / unknown) send was delivered.
+ * Transactional, so it can't race with a send that settles at the same moment.
+ */
+export async function reconcileResponse(
+  id: string,
+  outcome: ReconcileOutcome,
+  db: Firestore = getAdminDb(),
+  nowMs: number = Date.now(),
+): Promise<SupportTicketRecord> {
+  const ref = ticketRef(db, id);
+  await withTimeout(
+    db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) throw new TicketNotFoundError(id);
+      const fields = decideTicketReconcile(
+        snap.data() ?? {},
+        outcome,
+        nowMs,
+        new Date(nowMs).toISOString(),
+      );
+      tx.update(ref, toStored(fields));
+    }),
+    TX_TIMEOUT_MS,
+  );
+  return readTicketFresh(id, db);
 }

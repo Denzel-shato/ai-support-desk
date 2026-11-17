@@ -1,4 +1,5 @@
 import { connection, NextResponse } from "next/server";
+import { requireAuth } from "@/lib/auth/require-auth";
 import { isValidMessageId } from "@/lib/communications";
 import {
   claimFollowUp,
@@ -13,14 +14,14 @@ import {
 } from "@/lib/n8n-send-response";
 import { readJsonBody } from "@/lib/request-guard";
 import { responseErrorResponse } from "@/lib/response-api-errors";
-import { ResponseWorkflowError, TIMEOUT_MESSAGE } from "@/lib/response-workflow";
+import { ResponseWorkflowError } from "@/lib/response-workflow";
 import { errorResponse, NO_STORE } from "@/lib/ticket-api-errors";
 
 export const maxDuration = 30;
 
 /**
  * POST /api/tickets/[id]/followups
- * Body: { messageId: <uuid>, content?: string }
+ * Body: { messageId: <uuid>, content?: string, retryUnknown?: boolean }
  *
  * Sends a follow-up to the customer. The browser generates `messageId` once per
  * draft: it is the message's ID and the idempotency key, so a double-click or a
@@ -29,7 +30,12 @@ export const maxDuration = 30;
  * the stored ticket. Independent of the initial response's review state.
  * Order of checks: id, body, message ID, text, webhook config, Firestore.
  *
- * Answers: 200 sent, 202 queued (not confirmed), 502 failed, 504 timeout.
+ * A message whose earlier attempt is unsettled (queued / unknown) is refused
+ * (409 delivery_unconfirmed) unless `retryUnknown` is true: the agent chose to
+ * resend after checking, accepting a possible duplicate.
+ *
+ * Answers: 200 sent, 202 queued (accepted, not confirmed), 502 failed (known
+ * not delivered), 504 unknown (may have been delivered; NOT marked failed).
  */
 export async function POST(
   request: Request,
@@ -38,6 +44,7 @@ export async function POST(
   await connection();
 
   try {
+    await requireAuth(request);
     const { id } = await context.params;
     if (!isValidDocumentId(id)) throw new InvalidTicketIdError();
 
@@ -52,7 +59,9 @@ export async function POST(
     }
     const config = readWebhookConfig();
 
-    const claim = await claimFollowUp(id, messageId, body?.content);
+    const claim = await claimFollowUp(id, messageId, body?.content, undefined, undefined, {
+      retryUnknown: body?.retryUnknown === true,
+    });
     const payload = buildFollowUpPayload(id, claim, new Date().toISOString());
     const outcome = await callSendWebhook(config, payload);
 
@@ -60,7 +69,10 @@ export async function POST(
     try {
       await recordFollowUpOutcome(id, messageId, outcome);
     } catch (error) {
-      console.error("[api/tickets/[id]/followups] Could not record the outcome:", error);
+      console.error(
+        `[api/tickets/[id]/followups] Could not record the outcome (${outcome.kind}) for ticket ${id}, message ${messageId}:`,
+        error,
+      );
       warning =
         outcome.kind === "sent"
           ? "The email was sent, but saving that failed. Refresh to check; do not send it again."
@@ -75,7 +87,7 @@ export async function POST(
         { status: 200, headers: NO_STORE },
       );
     }
-    if (outcome.kind === "unconfirmed") {
+    if (outcome.kind === "accepted") {
       return NextResponse.json(
         {
           result: "queued",
@@ -85,8 +97,8 @@ export async function POST(
         { status: 202, headers: NO_STORE },
       );
     }
-    if (outcome.kind === "timeout") {
-      return errorResponse(504, "delivery_timeout", TIMEOUT_MESSAGE);
+    if (outcome.kind === "unknown") {
+      return errorResponse(504, "delivery_unknown", outcome.message);
     }
     return errorResponse(502, "delivery_failed", outcome.message);
   } catch (error) {

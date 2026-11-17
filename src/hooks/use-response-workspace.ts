@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useMemo, useState } from "react";
-import { reviewResponse, sendResponse } from "@/lib/api/ticket-response";
+import { reconcileSend, reviewResponse, sendResponse } from "@/lib/api/ticket-response";
 import { fetchTicket, TicketsApiError } from "@/lib/api/tickets";
 import {
   buildResponseWorkspace,
@@ -9,6 +9,7 @@ import {
   normalizeResponseText,
   sendBlockedReason,
   validateResponseText,
+  type ReconcileOutcome,
   type ResponseWorkspaceView,
 } from "@/lib/response-workflow";
 import type { SupportTicketRecord } from "@/lib/types";
@@ -22,7 +23,13 @@ import type { SupportTicketRecord } from "@/lib/types";
  * response, else the original AI response) unless the agent has unsaved edits.
  */
 
-export type BusyAction = "approve" | "reject" | "reopen" | "send" | "refresh";
+export type BusyAction =
+  | "approve"
+  | "reject"
+  | "reopen"
+  | "send"
+  | "reconcile"
+  | "refresh";
 
 export interface Feedback {
   kind: "success" | "error" | "info";
@@ -41,6 +48,8 @@ export interface ResponseWorkspaceState {
   busy: BusyAction | null;
   feedback: Feedback | null;
   confirmingSend: boolean;
+  /** The agent is confirming a resend of an unsettled send (duplicate possible). */
+  confirmingResend: boolean;
   /** Why sending is unavailable right now, or null. */
   sendBlocked: string | null;
   approve: () => void;
@@ -50,6 +59,10 @@ export interface ResponseWorkspaceState {
   askToSend: () => void;
   cancelSend: () => void;
   confirmSend: () => void;
+  askToResend: () => void;
+  cancelResend: () => void;
+  confirmResend: () => void;
+  reconcile: (outcome: ReconcileOutcome) => void;
   refresh: () => void;
 }
 
@@ -68,6 +81,7 @@ export function useResponseWorkspace(
   const [busy, setBusy] = useState<BusyAction | null>(null);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const [confirmingSend, setConfirmingSend] = useState(false);
+  const [confirmingResend, setConfirmingResend] = useState(false);
 
   // Follow the stored baseline (adjust state during render, not in an effect).
   // Unsaved edits are kept unless the text was untouched or the ticket is locked.
@@ -151,12 +165,13 @@ export function useResponseWorkspace(
     [run, text, dirty, ticket.id, onTicketChange, refetch],
   );
 
-  const confirmSend = useCallback(
-    () =>
+  const doSend = useCallback(
+    (retryUnknown: boolean) =>
       run("send", async () => {
         setConfirmingSend(false);
+        setConfirmingResend(false);
         try {
-          const result = await sendResponse(ticket.id);
+          const result = await sendResponse(ticket.id, { retryUnknown });
           if (result.ticket) onTicketChange(result.ticket);
           else await refetch();
           setFeedback(
@@ -169,7 +184,7 @@ export function useResponseWorkspace(
                   kind: "info",
                   message:
                     result.message ??
-                    "The send was accepted but delivery isn't confirmed yet. Use Check status before retrying.",
+                    "The email workflow accepted the send but hasn't confirmed delivery. Check status before sending again.",
                 },
           );
         } catch (error) {
@@ -178,6 +193,29 @@ export function useResponseWorkspace(
             message: messageOf(error, "The response was not sent. You can try again."),
           });
           // The server may have recorded "failed" or "queued"; show what's stored.
+          await refetch();
+        }
+      }),
+    [run, ticket.id, onTicketChange, refetch],
+  );
+
+  const reconcile = useCallback(
+    (outcome: ReconcileOutcome) =>
+      run("reconcile", async () => {
+        try {
+          onTicketChange(await reconcileSend(ticket.id, outcome));
+          setFeedback({
+            kind: "success",
+            message:
+              outcome === "delivered"
+                ? "Recorded as delivered (confirmed by you)."
+                : "Recorded as not delivered. You can send it again.",
+          });
+        } catch (error) {
+          setFeedback({
+            kind: "error",
+            message: messageOf(error, "Couldn't record that. Nothing was changed."),
+          });
           await refetch();
         }
       }),
@@ -204,6 +242,7 @@ export function useResponseWorkspace(
     setText(value.slice(0, MAX_RESPONSE_LENGTH + 1));
     setFeedback(null);
     setConfirmingSend(false);
+    setConfirmingResend(false);
   }, []);
 
   return {
@@ -216,6 +255,7 @@ export function useResponseWorkspace(
     busy,
     feedback,
     confirmingSend,
+    confirmingResend,
     sendBlocked,
     approve: () => void review("approve"),
     reject: () => void review("reject"),
@@ -225,7 +265,11 @@ export function useResponseWorkspace(
     },
     askToSend: () => setConfirmingSend(true),
     cancelSend: () => setConfirmingSend(false),
-    confirmSend: () => void confirmSend(),
+    confirmSend: () => void doSend(false),
+    askToResend: () => setConfirmingResend(true),
+    cancelResend: () => setConfirmingResend(false),
+    confirmResend: () => void doSend(true),
+    reconcile: (outcome) => void reconcile(outcome),
     refresh: () => void refresh(),
   };
 }

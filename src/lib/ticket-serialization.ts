@@ -79,22 +79,70 @@ function toJsonSafe(value: unknown): unknown {
 }
 
 /**
- * Builds the API representation of one `support_tickets` document.
- * Existing fields keep their names and meanings; only date values are
- * rewritten (to ISO strings, or null when unparseable). The Firestore
- * document ID always wins as `id`.
+ * The fields of a ticket document the dashboard may receive. Anything else on
+ * the document (internal bookkeeping such as the send idempotency key, or
+ * fields some other tool added) is deliberately NOT forwarded to the browser:
+ * an allowlist means a new sensitive field is private until someone decides
+ * otherwise.
+ */
+export const TICKET_API_FIELDS = [
+  "customerName",
+  "customerEmail",
+  "message",
+  "category",
+  "reason",
+  "sentiment",
+  "priority",
+  "summary",
+  "kbStatus",
+  "relevantSection",
+  "coverageReason",
+  "supportedSteps",
+  "unsupportedParts",
+  "escalationRequired",
+  "customerResponse",
+  "aiResponse",
+  "status",
+  "createdAt",
+  "escalationStatus",
+  "escalationReason",
+  "escalatedAt",
+  "reviewStatus",
+  "finalResponse",
+  "responseStatus",
+  "responseSentAt",
+  "responseError",
+  "responseQueuedAt",
+  "responseConfirmedBy",
+] as const;
+
+const DATE_FIELDS = new Set([
+  "createdAt",
+  "escalatedAt",
+  "responseSentAt",
+  "responseQueuedAt",
+]);
+
+/**
+ * Builds the API representation of one `support_tickets` document: only the
+ * allowlisted fields, with date values rewritten to ISO strings (or null when
+ * unparseable). Field names and meanings are unchanged. The Firestore document
+ * ID always wins as `id`.
  */
 export function serializeTicket(
   id: string,
   data: Record<string, unknown>,
 ): SupportTicketRecord {
-  const safe = toJsonSafe(data) as Record<string, unknown>;
-  return {
-    ...safe,
-    createdAt: toIsoOrNull(data.createdAt),
-    escalatedAt: toIsoOrNull(data.escalatedAt),
-    id,
-  } as SupportTicketRecord;
+  const out: Record<string, unknown> = {};
+  for (const name of TICKET_API_FIELDS) {
+    if (!(name in data)) continue;
+    const value = data[name];
+    out[name] = DATE_FIELDS.has(name) ? toIsoOrNull(value) : toJsonSafe(value);
+  }
+  // Always present, as before, so the UI can rely on them.
+  out.createdAt = toIsoOrNull(data.createdAt);
+  out.escalatedAt = toIsoOrNull(data.escalatedAt);
+  return { ...out, id } as SupportTicketRecord;
 }
 
 /** Newest first; tickets without a usable createdAt sort last. */

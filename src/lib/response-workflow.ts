@@ -1,4 +1,4 @@
-import { normalizePriority } from "./overview";
+import { approvalRequired } from "./overview";
 import { formatDateTime } from "./ticket-detail";
 import { toIsoOrNull } from "./ticket-serialization";
 import type { SupportTicketRecord } from "./types";
@@ -12,7 +12,21 @@ import type { SupportTicketRecord } from "./types";
  *
  * Two separate fields describe a response:
  *  - `reviewStatus`   the agent's decision: awaiting_review | approved | rejected
- *  - `responseStatus` email delivery:       draft | queued | sent | failed
+ *  - `responseStatus` email delivery:
+ *        draft    nothing has been sent
+ *        sending  the dashboard claimed the send and is calling n8n right now
+ *        queued   n8n accepted the request but has not confirmed delivery
+ *        sent     n8n confirmed delivery ({ "status": "sent" })
+ *        failed   it is known NOT to have been delivered (safe to try again)
+ *        unknown  the outcome can't be established (timeout, dropped
+ *                 connection, 5xx, a claim that never recorded an answer).
+ *                 The email MAY have been delivered, so it is never retried
+ *                 automatically: an agent checks, then confirms or resends.
+ *
+ * Nothing here can promise exactly-once delivery: Gmail and Firestore are
+ * separate systems. What it guarantees is that the dashboard never sends the
+ * same message twice without an explicit, informed decision, and that it
+ * hands n8n a stable idempotency key so the workflow can de-duplicate too.
  *
  * `aiResponse` and `customerResponse` are never written. The agent's edit lives
  * in `finalResponse`.
@@ -25,24 +39,43 @@ import type { SupportTicketRecord } from "./types";
 export const MAX_RESPONSE_LENGTH = 10_000;
 
 /**
- * A send that has been "queued" for longer than this is treated as stuck
- * (for example the server stopped before it heard back from n8n), so the agent
- * can retry or change the response. Within this window a second send is refused.
+ * A "sending" claim older than this never recorded an answer (the server
+ * stopped between calling n8n and saving the result, or Firestore failed
+ * afterwards). Its outcome is therefore UNKNOWN, not failed. The send route
+ * gives n8n 25 s, so two minutes is well past any live attempt.
  */
-export const STALE_QUEUE_MS = 2 * 60_000;
+export const STALE_SENDING_MS = 2 * 60_000;
 
 /** Fields stored as Firestore Timestamps. The pure layer deals in ISO strings. */
 export const TIMESTAMP_FIELDS = ["responseSentAt", "responseQueuedAt"] as const;
 
+export type ReconcileOutcome = "delivered" | "not_delivered";
+export const RECONCILE_OUTCOMES: readonly ReconcileOutcome[] = [
+  "delivered",
+  "not_delivered",
+];
+
 export const TIMEOUT_MESSAGE =
   "No confirmation came back from the email workflow in time. The email may or may not have been delivered, so check before sending again.";
+
+export const UNKNOWN_MESSAGE =
+  "The email workflow's answer didn't settle whether the email was delivered. It may or may not have been sent, so check before sending again.";
+
+export const UNCONFIRMED_MESSAGE =
+  "A previous attempt may already have been delivered. Check the customer's mail (or the n8n execution log), then mark it as delivered, or confirm that you want to send it again.";
 
 /* -------------------------------------------------------------------------- */
 /*  Types and errors                                                          */
 /* -------------------------------------------------------------------------- */
 
 export type ReviewStatus = "awaiting_review" | "approved" | "rejected";
-export type ResponseStatus = "draft" | "queued" | "sent" | "failed";
+export type ResponseStatus =
+  | "draft"
+  | "queued"
+  | "sending"
+  | "sent"
+  | "failed"
+  | "unknown";
 export type ReviewAction = "approve" | "reject" | "reopen";
 
 export const REVIEW_ACTIONS: readonly ReviewAction[] = [
@@ -79,17 +112,7 @@ type RawDoc = Record<string, unknown>;
 /*  Priority policy                                                           */
 /* -------------------------------------------------------------------------- */
 
-/**
- * Whether the AI response needs a human decision before it can be emailed.
- * Decided by PRIORITY only, never by the stored `reviewStatus` (the n8n
- * normal-handling branch writes "awaiting_review" for Low and Medium tickets
- * too). Low and Medium: no. High and Urgent: yes.
- * A missing or unrecognised priority requires approval: the safe default.
- */
-export function approvalRequired(priority: unknown): boolean {
-  const p = normalizePriority(priority);
-  return p !== "low" && p !== "medium";
-}
+export { approvalRequired };
 
 export const NOT_REQUIRED_MESSAGE =
   "Low and Medium tickets don't use approval. Use a follow-up message to write to the customer.";
@@ -128,9 +151,35 @@ export function normalizeReviewStatus(value: unknown): ReviewStatus | null {
 
 export function normalizeResponseStatus(value: unknown): ResponseStatus | null {
   const k = key(value);
-  return k === "draft" || k === "queued" || k === "sent" || k === "failed"
+  return k === "draft" ||
+    k === "queued" ||
+    k === "sending" ||
+    k === "sent" ||
+    k === "failed" ||
+    k === "unknown"
     ? k
     : null;
+}
+
+/**
+ * The status to act on. A "sending" claim that is older than STALE_SENDING_MS
+ * never recorded an answer, so its outcome is "unknown" (never "failed").
+ * `claimedAt` is an ISO string (or null).
+ */
+export function effectiveStatus(
+  status: ResponseStatus | null,
+  claimedAt: string | null,
+  nowMs: number,
+): ResponseStatus | null {
+  if (status !== "sending") return status;
+  if (!claimedAt) return "unknown";
+  const ms = Date.parse(claimedAt);
+  return Number.isNaN(ms) || nowMs - ms >= STALE_SENDING_MS ? "unknown" : "sending";
+}
+
+/** Statuses where an email may have gone out and nothing has settled it. */
+export function needsReconciliation(status: ResponseStatus | null): boolean {
+  return status === "queued" || status === "unknown";
 }
 
 /** The form a response is compared and stored in: LF line endings, trimmed. */
@@ -241,6 +290,7 @@ export interface ResponseWorkspaceView {
   /** Where the editor starts: the saved final response, else the original. */
   baseline: string;
   reviewStatus: ReviewStatus | null;
+  /** Delivery status, with a stale "sending" shown as "unknown". */
   responseStatus: ResponseStatus | null;
   sentAt: string | null;
   sentAtLabel: string | null;
@@ -248,16 +298,23 @@ export interface ResponseWorkspaceView {
   /** A valid single customer email address, or null. */
   recipient: string | null;
   customerName: string | null;
-  /** Sent or queued: the text can't be edited and decisions can't change. */
+  /** Sent, sending, queued or unknown: the text can't be edited or re-decided. */
   locked: boolean;
+  /** An email may have gone out and nothing has settled it: reconcile first. */
+  needsReconciliation: boolean;
 }
 
 export function buildResponseWorkspace(
   t: SupportTicketRecord,
+  nowMs: number = Date.now(),
 ): ResponseWorkspaceView {
   const original = pickOriginalAiResponse(t);
   const savedFinal = clean(t.finalResponse);
-  const responseStatus = normalizeResponseStatus(t.responseStatus);
+  const responseStatus = effectiveStatus(
+    normalizeResponseStatus(t.responseStatus),
+    toIsoOrNull(t.responseQueuedAt),
+    nowMs,
+  );
   const sentAt = toIsoOrNull(t.responseSentAt);
 
   return {
@@ -272,13 +329,20 @@ export function buildResponseWorkspace(
     error: shortText(t.responseError),
     recipient: cleanRecipient(t.customerEmail),
     customerName: clean(t.customerName),
-    locked: responseStatus === "sent" || responseStatus === "queued",
+    locked:
+      responseStatus === "sent" ||
+      responseStatus === "sending" ||
+      responseStatus === "queued" ||
+      responseStatus === "unknown",
+    needsReconciliation: needsReconciliation(responseStatus),
   };
 }
 
 /**
  * Why the send button is unavailable, or null when sending is allowed.
  * Mirrors the server's checks so the interface explains instead of failing.
+ * (When `needsReconciliation` is true the UI offers the reconcile actions
+ * instead of a plain send.)
  */
 export function sendBlockedReason(
   view: ResponseWorkspaceView,
@@ -288,6 +352,10 @@ export function sendBlockedReason(
   if (view.responseStatus === "sent") {
     return "This response has already been sent.";
   }
+  if (view.responseStatus === "sending") {
+    return "This response is being sent right now.";
+  }
+  if (view.needsReconciliation) return UNCONFIRMED_MESSAGE;
   if (view.reviewStatus !== "approved") {
     return "Approve the response before sending it.";
   }
@@ -307,10 +375,12 @@ export function sendBlockedReason(
 /*  Review transitions                                                        */
 /* -------------------------------------------------------------------------- */
 
-function queueIsFresh(raw: RawDoc, nowMs: number): boolean {
-  const iso = toIsoOrNull(raw.responseQueuedAt);
-  if (!iso) return false; // queued with no usable time: treat as stuck
-  return nowMs - Date.parse(iso) < STALE_QUEUE_MS;
+function claimedAt(raw: RawDoc): string | null {
+  return toIsoOrNull(raw.responseQueuedAt);
+}
+
+function currentStatus(raw: RawDoc, nowMs: number): ResponseStatus | null {
+  return effectiveStatus(normalizeResponseStatus(raw.responseStatus), claimedAt(raw), nowMs);
 }
 
 /** Validates the body of a review request. Throws before any Firestore access. */
@@ -347,8 +417,10 @@ export function parseReviewRequest(body: unknown): {
  *  reopen   sets "awaiting_review" (submit for review again); saves the text
  *           if one is supplied.
  *
- * Changing the saved text discards any earlier delivery state (failed attempt,
- * error, send key), because that state was about different text.
+ * Decisions are refused once an email may exist for the text: sent, being sent,
+ * or with an unsettled outcome (queued / unknown). Changing the saved text
+ * discards earlier delivery state (a failed attempt, its error and send key),
+ * because that state was about different text.
  */
 export function decideReviewUpdate(
   raw: RawDoc,
@@ -357,7 +429,7 @@ export function decideReviewUpdate(
   nowMs: number,
 ): Record<string, unknown> {
   assertApprovalApplies(raw);
-  const status = normalizeResponseStatus(raw.responseStatus);
+  const status = currentStatus(raw, nowMs);
   if (status === "sent") {
     throw new ResponseWorkflowError(
       409,
@@ -365,11 +437,18 @@ export function decideReviewUpdate(
       "This response has already been sent, so it can no longer be changed.",
     );
   }
-  if (status === "queued" && queueIsFresh(raw, nowMs)) {
+  if (status === "sending") {
     throw new ResponseWorkflowError(
       409,
       "send_in_progress",
       "This response is being sent right now. Wait for that to finish before changing it.",
+    );
+  }
+  if (needsReconciliation(status)) {
+    throw new ResponseWorkflowError(
+      409,
+      "delivery_unconfirmed",
+      "An earlier attempt to send this response may have been delivered. Mark it as delivered, or confirm it wasn't, before changing it.",
     );
   }
 
@@ -393,6 +472,7 @@ export function decideReviewUpdate(
       fields.responseError = null;
       fields.responseSendId = null;
       fields.responseQueuedAt = null;
+      fields.responseAttempts = 0;
     } else if (status === null) {
       fields.responseStatus = "draft";
     }
@@ -408,7 +488,10 @@ export function decideReviewUpdate(
 export interface SendClaim {
   /** Written to the ticket to claim the send (inside a transaction). */
   fields: Record<string, unknown>;
+  /** Stable for this text: identical on every retry, so n8n can recognise a repeat. */
   idempotencyKey: string;
+  /** 1 for the first attempt, then 2, 3 ... */
+  attempt: number;
   recipient: string;
   customerName: string | null;
   finalResponse: string;
@@ -421,19 +504,34 @@ export interface SendClaim {
   };
 }
 
+export interface SendOptions {
+  /**
+   * The agent has seen that an earlier attempt's outcome is unknown and
+   * accepts the risk of a duplicate email. Without it, such a ticket can't be
+   * sent again.
+   */
+  retryUnknown?: boolean;
+}
+
 /**
  * Decides whether a send may start, using only what is stored on the ticket:
  * the recipient and the text come from Firestore, never from the browser.
  * Throws a ResponseWorkflowError describing why not.
+ *
+ *  sent                   refused: it can't be sent twice
+ *  sending (fresh)        refused: another request holds the claim
+ *  queued / unknown       refused unless `retryUnknown` (an email may exist)
+ *  draft / failed         allowed (failed = known not delivered)
  */
 export function decideSendClaim(
   raw: RawDoc,
   nowMs: number,
   nowIso: string,
   newKey: () => string,
+  options: SendOptions = {},
 ): SendClaim {
   assertApprovalApplies(raw);
-  const status = normalizeResponseStatus(raw.responseStatus);
+  const status = currentStatus(raw, nowMs);
 
   if (status === "sent") {
     throw new ResponseWorkflowError(
@@ -449,12 +547,15 @@ export function decideSendClaim(
       "Only an approved response can be sent. Approve it first.",
     );
   }
-  if (status === "queued" && queueIsFresh(raw, nowMs)) {
+  if (status === "sending") {
     throw new ResponseWorkflowError(
       409,
       "send_in_progress",
       "This response is already being sent. Wait a moment, then check its status.",
     );
+  }
+  if (needsReconciliation(status) && !options.retryUnknown) {
+    throw new ResponseWorkflowError(409, "delivery_unconfirmed", UNCONFIRMED_MESSAGE);
   }
 
   const text = validateResponseText(raw.finalResponse);
@@ -477,15 +578,22 @@ export function decideSendClaim(
 
   // Reuse the key across retries of the same text so n8n can recognise a repeat.
   const idempotencyKey = clean(raw.responseSendId) ?? newKey();
+  const previousAttempts =
+    typeof raw.responseAttempts === "number" && raw.responseAttempts > 0
+      ? Math.floor(raw.responseAttempts)
+      : 0;
+  const attempt = previousAttempts + 1;
 
   return {
     fields: {
-      responseStatus: "queued",
+      responseStatus: "sending",
       responseQueuedAt: nowIso,
       responseSendId: idempotencyKey,
+      responseAttempts: attempt,
       responseError: null,
     },
     idempotencyKey,
+    attempt,
     recipient,
     customerName: clean(raw.customerName),
     finalResponse: text.text,
@@ -504,16 +612,26 @@ export function decideSendClaim(
 /* -------------------------------------------------------------------------- */
 
 export type WebhookOutcome =
+  /** n8n said the email was sent. */
   | { kind: "sent"; sentAt: string | null; messageId: string | null }
+  /** Known NOT delivered: n8n said so, or rejected the request outright. */
   | { kind: "failed"; message: string }
-  | { kind: "timeout" }
-  /** A 2xx reply that does not say the email was sent. Not treated as sent. */
-  | { kind: "unconfirmed" };
+  /** Can't be established: a timeout, a dropped connection, a 5xx. */
+  | { kind: "unknown"; message: string }
+  /** A 2xx that doesn't say the email was sent: accepted, not confirmed. */
+  | { kind: "accepted" };
 
 /**
  * "Sent" requires n8n to say so explicitly: HTTP 2xx AND `{ "status": "sent" }`.
  * A bare 200 (n8n's default "Workflow was started" reply, or a Respond node
- * placed before the Gmail node) proves nothing, so it stays "unconfirmed".
+ * placed before the Gmail node) proves nothing, so it stays "accepted".
+ *
+ * An error status is only "failed" (safe to retry) when it shows the request
+ * was refused before any email could be sent: 4xx other than 408. A 5xx or a
+ * 408 can come from a workflow that sent the email and then errored (or from
+ * a gateway in front of one), so it is "unknown". An explicit
+ * `{ "status": "failed" }` or `{ "status": "unknown" }` from the workflow is
+ * authoritative.
  */
 export function interpretWebhookResponse(
   httpStatus: number,
@@ -528,16 +646,31 @@ export function interpretWebhookResponse(
   const bodyStatus = obj ? key(obj.status) : "";
   const bodyError = obj ? shortText(obj.error) ?? shortText(obj.message) : null;
 
-  if (httpStatus < 200 || httpStatus >= 300) {
-    return {
-      kind: "failed",
-      message: bodyError ?? `The email workflow answered with an error (HTTP ${httpStatus}).`,
-    };
-  }
   if (bodyStatus === "failed") {
     return {
       kind: "failed",
       message: bodyError ?? "The email workflow reported that sending failed.",
+    };
+  }
+  if (bodyStatus === "unknown") {
+    // The workflow itself says it can't tell (e.g. it finds a send claim from
+    // an earlier attempt that never finished). Authoritative, any HTTP status.
+    return { kind: "unknown", message: bodyError ?? UNKNOWN_MESSAGE };
+  }
+  if (httpStatus < 200 || httpStatus >= 300) {
+    if (httpStatus >= 400 && httpStatus < 500 && httpStatus !== 408) {
+      return {
+        kind: "failed",
+        message:
+          bodyError ??
+          `The email workflow refused the request (HTTP ${httpStatus}), so nothing was sent.`,
+      };
+    }
+    return {
+      kind: "unknown",
+      message:
+        `The email workflow answered with an error (HTTP ${httpStatus}) that doesn't show whether the email was sent. ` +
+        "It may or may not have been delivered, so check before sending again.",
     };
   }
   if (bodyStatus === "sent") {
@@ -547,15 +680,16 @@ export function interpretWebhookResponse(
       messageId: obj ? shortText(obj.messageId, 200) : null,
     };
   }
-  return { kind: "unconfirmed" };
+  return { kind: "accepted" };
 }
 
 /**
- * The fields to write once n8n has answered, or null to write nothing.
- *  - A newer attempt (different key) is never overwritten.
- *  - A ticket already marked "sent" is never changed, so a late failure can't
- *    undo a delivery that n8n recorded first.
- *  - "unconfirmed" leaves the ticket "queued".
+ * The fields to write once n8n has answered, or null to write nothing. The
+ * record is only written while this attempt's claim is still "sending":
+ *  - a newer attempt (different key) is never overwritten;
+ *  - a ticket already "sent" is never changed, so a late failure can't undo a
+ *    delivery n8n recorded first;
+ *  - a ticket an agent already reconciled is left as they set it.
  */
 export function decideSendRecord(
   raw: RawDoc,
@@ -564,20 +698,88 @@ export function decideSendRecord(
   nowIso: string,
 ): Record<string, unknown> | null {
   if (clean(raw.responseSendId) !== idempotencyKey) return null;
-  if (normalizeResponseStatus(raw.responseStatus) === "sent") return null;
+  if (normalizeResponseStatus(raw.responseStatus) !== "sending") return null;
 
   switch (outcome.kind) {
-    case "unconfirmed":
-      return null;
+    case "accepted":
+      return { responseStatus: "queued", responseError: null };
     case "sent":
       return {
         responseStatus: "sent",
         responseSentAt: outcome.sentAt ?? nowIso,
         responseError: null,
       };
-    case "timeout":
-      return { responseStatus: "failed", responseError: TIMEOUT_MESSAGE };
+    case "unknown":
+      return { responseStatus: "unknown", responseError: outcome.message };
     case "failed":
       return { responseStatus: "failed", responseError: outcome.message };
   }
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Reconciling an unsettled send                                             */
+/* -------------------------------------------------------------------------- */
+
+export function parseReconcileRequest(body: unknown): ReconcileOutcome {
+  const obj = (typeof body === "object" && body !== null ? body : {}) as RawDoc;
+  const outcome = RECONCILE_OUTCOMES.find((o) => o === obj.outcome);
+  if (!outcome) {
+    throw new ResponseWorkflowError(
+      400,
+      "invalid_outcome",
+      'The outcome must be "delivered" or "not_delivered".',
+    );
+  }
+  return outcome;
+}
+
+/** The unsettled states an agent may resolve by hand. */
+export function assertCanReconcile(status: ResponseStatus | null): void {
+  if (status === "sent") {
+    throw new ResponseWorkflowError(
+      409,
+      "already_sent",
+      "This is already recorded as sent.",
+    );
+  }
+  if (status === "sending") {
+    throw new ResponseWorkflowError(
+      409,
+      "send_in_progress",
+      "It is still being sent. Wait for the result before recording an outcome.",
+    );
+  }
+  if (!needsReconciliation(status)) {
+    throw new ResponseWorkflowError(
+      409,
+      "nothing_to_reconcile",
+      "There is no unsettled send to resolve.",
+    );
+  }
+}
+
+export const AGENT_NOT_DELIVERED_MESSAGE =
+  "An agent confirmed this email was not delivered.";
+
+/**
+ * An agent checked (the customer's mail, the n8n execution log) and states what
+ * happened. "delivered" records it as sent, flagged as agent-confirmed;
+ * "not_delivered" records it as failed, which makes a normal resend possible.
+ */
+export function decideTicketReconcile(
+  raw: RawDoc,
+  outcome: ReconcileOutcome,
+  nowMs: number,
+  nowIso: string,
+): Record<string, unknown> {
+  assertApprovalApplies(raw);
+  assertCanReconcile(currentStatus(raw, nowMs));
+  return outcome === "delivered"
+    ? {
+        responseStatus: "sent",
+        responseSentAt: nowIso,
+        responseError: null,
+        responseConfirmedBy: "agent",
+      }
+    : { responseStatus: "failed", responseError: AGENT_NOT_DELIVERED_MESSAGE };
 }

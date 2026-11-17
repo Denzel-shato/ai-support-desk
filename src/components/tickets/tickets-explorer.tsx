@@ -14,6 +14,8 @@ import {
   OverviewError,
   RefreshFailedNotice,
 } from "@/components/overview/overview-states";
+import { TruncationNotice } from "@/components/ui/truncation-notice";
+import { MAX_TICKETS } from "@/lib/limits";
 import { useTickets } from "@/hooks/use-tickets";
 import {
   applyFilters,
@@ -28,7 +30,7 @@ import { TicketsSkeleton } from "./tickets-skeleton";
 import { TicketsTable } from "./tickets-table";
 
 export function TicketsExplorer() {
-  const { tickets, error, loading, refreshing, updatedAt, refresh } =
+  const { tickets, error, loading, refreshing, updatedAt, truncated, refresh } =
     useTickets();
   const [filters, setFilters] = useState<TicketFilters>(DEFAULT_FILTERS);
 
@@ -80,6 +82,8 @@ export function TicketsExplorer() {
           </Button>
         </div>
       </section>
+
+      {truncated && <TruncationNotice noun="tickets" limit={MAX_TICKETS} />}
 
       {loading && <TicketsSkeleton />}
 

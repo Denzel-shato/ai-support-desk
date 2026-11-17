@@ -1,6 +1,8 @@
 import "server-only";
 
 import { NextResponse } from "next/server";
+import { randomUUID } from "node:crypto";
+import { AuthError } from "./auth/require-auth";
 import { FirebaseConfigError } from "./firebase-admin";
 import {
   InvalidTicketIdError,
@@ -21,6 +23,39 @@ export function errorResponse(
   return NextResponse.json(body, { status, headers: NO_STORE });
 }
 
+/**
+ * Logs a server-side failure with a short request ID and answers with the same
+ * ID, so a report from the browser can be matched to the server log. The log
+ * gets the full error (stack included); the client gets only a safe message.
+ */
+export function serverError(
+  status: number,
+  code: string,
+  message: string,
+  logLabel: string,
+  error: unknown,
+  extra: Partial<ApiErrorBody["error"]> = {},
+) {
+  const requestId = randomUUID().slice(0, 8);
+  const e = error as { name?: unknown; code?: unknown; message?: unknown } | null;
+  console.error(
+    `[${logLabel}] ${code} (request ${requestId}): ${String(e?.name ?? "Error")} code=${String(e?.code ?? "-")} ${String(e?.message ?? "")}`,
+    error,
+  );
+  return errorResponse(status, code, message, { ...extra, requestId });
+}
+
+/** 401/503 from requireAuth, or null when the error is something else. */
+export function authErrorResponse(error: unknown) {
+  if (!(error instanceof AuthError)) return null;
+  return errorResponse(
+    error.status,
+    error.code,
+    error.message,
+    error.missing.length ? { missing: error.missing } : {},
+  );
+}
+
 /** gRPC status code from a Firestore error, if it has one. */
 function grpcCode(error: unknown): number | null {
   const code = (error as { code?: unknown } | null)?.code;
@@ -33,6 +68,8 @@ function grpcCode(error: unknown): number | null {
  * problems identically.
  */
 export function ticketsErrorResponse(error: unknown, logLabel: string) {
+  const auth = authErrorResponse(error);
+  if (auth) return auth;
   if (error instanceof FirebaseConfigError) {
     return errorResponse(503, "firebase_not_configured", error.message, {
       missing: error.missing,
@@ -56,37 +93,46 @@ export function ticketsErrorResponse(error: unknown, logLabel: string) {
     );
   }
 
-  // Log the full error on the server only; never send it to the browser.
-  console.error(`[${logLabel}] Failed to read from Firestore:`, error);
-
+  // The full error is logged on the server only; the browser gets a safe message.
   switch (grpcCode(error)) {
     case 7: // PERMISSION_DENIED
     case 16: // UNAUTHENTICATED
-      return errorResponse(
+      return serverError(
         500,
         "firestore_permission_denied",
         "Firestore rejected the service account. Check that the credentials belong to project ai-support-desk-9c4ed and that the account can read Firestore.",
+        logLabel,
+        error,
       );
     case 5: // NOT_FOUND
-      return errorResponse(
+      return serverError(
         500,
         "firestore_not_found",
         "The Firestore database was not found. Check that Firestore is enabled for the project.",
+        logLabel,
+        error,
       );
     case 14: // UNAVAILABLE
     case 4: // DEADLINE_EXCEEDED
-      return errorResponse(
+      return serverError(
         503,
         "firestore_unavailable",
         "Firestore is temporarily unreachable. Try again in a moment.",
+        logLabel,
+        error,
       );
     default:
-      return errorResponse(
+      return serverError(
         500,
         "firestore_error",
-        "Something went wrong while reading tickets from Firestore.",
+        "Something went wrong while reading from Firestore.",
+        logLabel,
+        error,
       );
   }
 }
+
+/** Set on a list response when a safety cap cut results off. */
+export const TRUNCATED_HEADER = "X-Result-Truncated";
 
 export { NO_STORE };

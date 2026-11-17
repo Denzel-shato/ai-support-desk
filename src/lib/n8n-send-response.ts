@@ -4,6 +4,8 @@ import type { FollowUpClaim } from "./communications";
 import {
   interpretWebhookResponse,
   ResponseWorkflowError,
+  TIMEOUT_MESSAGE,
+  UNKNOWN_MESSAGE,
   type SendClaim,
   type WebhookOutcome,
 } from "./response-workflow";
@@ -68,7 +70,19 @@ export function readWebhookConfig(
     );
   }
 
-  return { url: url.toString(), secret: env[WEBHOOK_SECRET_ENV]?.trim() || null };
+  const secret = env[WEBHOOK_SECRET_ENV]?.trim() || null;
+  // In production the webhook must authenticate the dashboard, otherwise
+  // anyone who learns the URL could make n8n send email.
+  if (!secret && env.NODE_ENV === "production") {
+    throw new ResponseWorkflowError(
+      503,
+      "send_misconfigured",
+      "Sending requires a webhook secret in production. Add it to the server environment and to the n8n webhook's header authentication, then restart.",
+      [WEBHOOK_SECRET_ENV],
+    );
+  }
+
+  return { url: url.toString(), secret };
 }
 
 export interface WebhookPayload {
@@ -77,7 +91,13 @@ export interface WebhookPayload {
   messageType: "initial_response" | "follow_up";
   /** Set for follow-ups: the message document ID. */
   messageId?: string;
+  /**
+   * Identifies THIS message and is identical on every retry of it. n8n should
+   * record it and skip a repeat (see docs/n8n-send-response-workflow.md).
+   */
   idempotencyKey: string;
+  /** 1 for the first try, higher for retries of the same message. */
+  attempt: number;
   customerName: string | null;
   customerEmail: string;
   subject: string;
@@ -100,6 +120,7 @@ export function buildWebhookPayload(
     ticketId,
     messageType: "initial_response",
     idempotencyKey: claim.idempotencyKey,
+    attempt: claim.attempt,
     customerName: claim.customerName,
     customerEmail: claim.recipient,
     subject: "Re: Your support request",
@@ -122,6 +143,7 @@ export function buildFollowUpPayload(
     messageType: "follow_up",
     messageId: claim.idempotencyKey,
     idempotencyKey: claim.idempotencyKey,
+    attempt: claim.attempt,
     customerName: claim.customerName,
     customerEmail: claim.recipient,
     subject: "Re: Your support request",
@@ -132,9 +154,33 @@ export function buildFollowUpPayload(
 }
 
 /**
- * POSTs the payload and interprets the answer. Never throws for network or
- * HTTP problems: they become a "failed" or "timeout" outcome. A "sent" outcome
- * requires n8n to say so explicitly (see interpretWebhookResponse).
+ * Network errors that happen BEFORE any request reached n8n (nothing was
+ * sent, so the attempt is a clean failure). Anything else that throws, such as
+ * a reset connection, could have happened after n8n started, so it's unknown.
+ */
+const NOT_DELIVERED_CODES = new Set([
+  "ECONNREFUSED",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "ERR_INVALID_URL",
+  "UND_ERR_CONNECT_TIMEOUT",
+]);
+
+function errorCode(error: unknown): string | null {
+  const e = error as { code?: unknown; cause?: { code?: unknown } } | null;
+  const code = e?.cause?.code ?? e?.code;
+  return typeof code === "string" ? code : null;
+}
+
+/**
+ * POSTs the payload (once: never retried here, because a retry after an
+ * ambiguous result could send a second email) and classifies the answer.
+ * Never throws for network or HTTP problems:
+ *  - 2xx + { status: "sent" }          -> sent
+ *  - 2xx without that                  -> accepted (queued, unconfirmed)
+ *  - explicit failure / 4xx (not 408)  -> failed (known not delivered)
+ *  - timeout, reset, 5xx, 408          -> unknown (may have been delivered)
+ *  - could not connect at all          -> failed
  */
 export async function callSendWebhook(
   config: WebhookConfig,
@@ -145,6 +191,8 @@ export async function callSendWebhook(
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     Accept: "application/json",
+    // n8n can use this to recognise a repeat even before reading the body.
+    "Idempotency-Key": payload.idempotencyKey,
   };
   if (config.secret) headers["X-Webhook-Secret"] = config.secret;
 
@@ -161,14 +209,18 @@ export async function callSendWebhook(
   } catch (error) {
     const name = (error as { name?: string } | null)?.name;
     if (name === "TimeoutError" || name === "AbortError") {
-      return { kind: "timeout" };
+      return { kind: "unknown", message: TIMEOUT_MESSAGE };
     }
-    // The message is deliberately generic: error text can contain the URL.
-    return {
-      kind: "failed",
-      message:
-        "The email workflow could not be reached. Check that the n8n workflow is active, then retry.",
-    };
+    const code = errorCode(error);
+    if (code && NOT_DELIVERED_CODES.has(code)) {
+      // The message is deliberately generic: error text can contain the URL.
+      return {
+        kind: "failed",
+        message:
+          "The email workflow could not be reached, so nothing was sent. Check that the n8n workflow is active, then retry.",
+      };
+    }
+    return { kind: "unknown", message: UNKNOWN_MESSAGE };
   }
 
   let body: unknown = null;

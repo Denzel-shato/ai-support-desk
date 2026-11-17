@@ -54,10 +54,21 @@ function isApiErrorBody(value: unknown): value is ApiErrorBody {
   );
 }
 
+/**
+ * A 401 means the session expired or was never there: send the browser to the
+ * sign-in page (then back here) instead of showing a confusing error.
+ */
+export function redirectIfSignedOut(response: Response): void {
+  if (response.status !== 401 || typeof window === "undefined") return;
+  const here = window.location.pathname + window.location.search;
+  // eslint-disable-next-line @next/next/no-location-assign-relative-destination -- full reload on purpose: clears client state and re-runs the sign-in gate
+  window.location.href = `/login?next=${encodeURIComponent(here)}`;
+}
+
 export async function requestJson(
   url: string,
   signal?: AbortSignal,
-): Promise<{ body: unknown; status: number }> {
+): Promise<{ body: unknown; status: number; truncated: boolean }> {
   let response: Response;
   try {
     response = await fetch(url, { cache: "no-store", signal });
@@ -76,6 +87,7 @@ export async function requestJson(
     body = null;
   }
 
+  redirectIfSignedOut(response);
   if (!response.ok) {
     if (isApiErrorBody(body)) {
       throw new TicketsApiError(body.error.message, {
@@ -90,13 +102,17 @@ export async function requestJson(
     );
   }
 
-  return { body, status: response.status };
+  return {
+    body,
+    status: response.status,
+    truncated: response.headers.get("X-Result-Truncated") === "true",
+  };
 }
 
 export async function fetchTickets(
   signal?: AbortSignal,
-): Promise<SupportTicketRecord[]> {
-  const { body, status } = await requestJson("/api/tickets", signal);
+): Promise<{ tickets: SupportTicketRecord[]; truncated: boolean }> {
+  const { body, status, truncated } = await requestJson("/api/tickets", signal);
 
   if (!Array.isArray(body)) {
     throw new TicketsApiError("The server returned data in an unexpected format.", {
@@ -105,7 +121,7 @@ export async function fetchTickets(
     });
   }
 
-  return body as SupportTicketRecord[];
+  return { tickets: body as SupportTicketRecord[], truncated };
 }
 
 /** Fetches one ticket by Firestore document ID. 404s surface as `ticket_not_found`. */

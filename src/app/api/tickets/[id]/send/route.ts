@@ -1,4 +1,5 @@
 import { connection, NextResponse } from "next/server";
+import { requireAuth } from "@/lib/auth/require-auth";
 import {
   claimResponseSend,
   readTicketFresh,
@@ -12,7 +13,6 @@ import {
 } from "@/lib/n8n-send-response";
 import { readJsonBody } from "@/lib/request-guard";
 import { responseErrorResponse } from "@/lib/response-api-errors";
-import { TIMEOUT_MESSAGE } from "@/lib/response-workflow";
 import { errorResponse, NO_STORE } from "@/lib/ticket-api-errors";
 
 // The webhook is given 25 s; leave room for the Firestore reads and writes.
@@ -25,11 +25,17 @@ export const maxDuration = 30;
  *
  *  1. Check the webhook is configured (before touching the ticket).
  *  2. Claim the send in a transaction: the ticket must be approved, not sent
- *     and not already being sent. Marks it "queued".
- *  3. POST to n8n. Only an explicit `{ "status": "sent" }` counts as delivered.
+ *     and not already being sent. Marks it "sending". A ticket whose earlier
+ *     attempt is unsettled (queued / unknown) is refused (409
+ *     delivery_unconfirmed) unless the body says `{ "retryUnknown": true }`,
+ *     which the agent chooses after checking, accepting a possible duplicate.
+ *  3. POST to n8n (once). Only an explicit `{ "status": "sent" }` counts as
+ *     delivered.
  *  4. Record the outcome, then answer.
  *
- * Answers: 200 sent, 202 queued (no confirmation yet), 502 failed, 504 timeout.
+ * Answers: 200 sent, 202 queued (accepted, not confirmed), 502 failed (known
+ * not delivered), 504 unknown (a timeout or error that doesn't settle it:
+ * the email may have gone out, so it is NOT recorded as failed).
  */
 export async function POST(
   request: Request,
@@ -38,13 +44,18 @@ export async function POST(
   await connection();
 
   try {
+    await requireAuth(request);
     const { id } = await context.params;
     if (!isValidDocumentId(id)) throw new InvalidTicketIdError();
 
-    await readJsonBody(request, { allowEmpty: true });
+    const body = (await readJsonBody(request, { allowEmpty: true })) as Record<
+      string,
+      unknown
+    > | null;
+    const retryUnknown = body?.retryUnknown === true;
     const config = readWebhookConfig();
 
-    const claim = await claimResponseSend(id);
+    const claim = await claimResponseSend(id, undefined, undefined, { retryUnknown });
     const payload = buildWebhookPayload(id, claim, new Date().toISOString());
     const outcome = await callSendWebhook(config, payload);
 
@@ -52,7 +63,10 @@ export async function POST(
     try {
       await recordSendOutcome(id, claim.idempotencyKey, outcome);
     } catch (error) {
-      console.error("[api/tickets/[id]/send] Could not record the outcome:", error);
+      console.error(
+        `[api/tickets/[id]/send] Could not record the outcome (${outcome.kind}) for ticket ${id}, key ${claim.idempotencyKey}:`,
+        error,
+      );
       warning =
         outcome.kind === "sent"
           ? "The email was sent, but saving that to Firestore failed. Refresh to check the status; do not send again."
@@ -67,7 +81,7 @@ export async function POST(
         { status: 200, headers: NO_STORE },
       );
     }
-    if (outcome.kind === "unconfirmed") {
+    if (outcome.kind === "accepted") {
       return NextResponse.json(
         {
           result: "queued",
@@ -78,8 +92,8 @@ export async function POST(
         { status: 202, headers: NO_STORE },
       );
     }
-    if (outcome.kind === "timeout") {
-      return errorResponse(504, "delivery_timeout", TIMEOUT_MESSAGE);
+    if (outcome.kind === "unknown") {
+      return errorResponse(504, "delivery_unknown", outcome.message);
     }
     return errorResponse(502, "delivery_failed", outcome.message);
   } catch (error) {

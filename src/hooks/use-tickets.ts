@@ -21,6 +21,8 @@ export interface UseTicketsResult {
   refreshing: boolean;
   /** When the current data was fetched. */
   updatedAt: Date | null;
+  /** The server hit its safety cap: the list is incomplete. */
+  truncated: boolean;
   refresh: () => void;
 }
 
@@ -38,6 +40,7 @@ export function useTickets(): UseTicketsResult {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
+  const [truncated, setTruncated] = useState(false);
   const controller = useRef<AbortController | null>(null);
 
   /** Starts a request, cancelling any one still in flight. */
@@ -49,7 +52,8 @@ export function useTickets(): UseTicketsResult {
     fetchTickets(current.signal)
       .then((data) => {
         if (current.signal.aborted) return;
-        setTickets(data);
+        setTickets(data.tickets);
+        setTruncated(data.truncated);
         setUpdatedAt(new Date());
         setError(null);
       })
@@ -74,5 +78,5 @@ export function useTickets(): UseTicketsResult {
     request();
   }, [request]);
 
-  return { tickets, error, loading, refreshing, updatedAt, refresh };
+  return { tickets, error, loading, refreshing, updatedAt, truncated, refresh };
 }

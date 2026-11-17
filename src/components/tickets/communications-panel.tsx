@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -16,27 +17,36 @@ import { Textarea } from "@/components/ui/textarea";
 import { useCommunications } from "@/hooks/use-communications";
 import type { HistoryEntry } from "@/lib/communications";
 import { formatDateTime } from "@/lib/ticket-detail";
-import { MAX_RESPONSE_LENGTH, type ResponseStatus } from "@/lib/response-workflow";
+import {
+  MAX_RESPONSE_LENGTH,
+  type ReconcileOutcome,
+  type ResponseStatus,
+} from "@/lib/response-workflow";
 import type { SupportTicketRecord } from "@/lib/types";
 
 const STATUS_PILL: Record<ResponseStatus, { label: string; bg: string; fg: string }> = {
   draft: { label: "Draft", bg: "#EEF0F2", fg: "#4B5563" },
-  queued: { label: "Sending…", bg: "#FDF3DC", fg: "#8A5A00" },
+  sending: { label: "Sending…", bg: "#FDF3DC", fg: "#8A5A00" },
+  queued: { label: "Awaiting confirmation", bg: "#FDF3DC", fg: "#8A5A00" },
   sent: { label: "Sent", bg: "#E5F2EB", fg: "#1F6B45" },
   failed: { label: "Failed", bg: "#FBEAE8", fg: "#9E2A20" },
+  unknown: { label: "Delivery unknown", bg: "#FDF3DC", fg: "#8A5A00" },
 };
 
 function HistoryItem({
   entry,
   busy,
   onRetry,
+  onReconcile,
   onRefresh,
 }: {
   entry: HistoryEntry;
   busy: string | null;
-  onRetry: (id: string) => void;
+  onRetry: (id: string, anyway?: boolean) => void;
+  onReconcile: (id: string, outcome: ReconcileOutcome) => void;
   onRefresh: () => void;
 }) {
+  const [confirming, setConfirming] = useState(false);
   const pill = entry.status ? STATUS_PILL[entry.status] : null;
   const when = formatDateTime(entry.sentAt ?? entry.createdAt);
   const isFollowUp = entry.type === "follow_up";
@@ -60,26 +70,25 @@ function HistoryItem({
         </span>
       </div>
       <p className="mt-1.5 whitespace-pre-wrap text-[13px] leading-relaxed">{entry.content}</p>
-      {entry.status === "failed" && entry.error && (
+      {(entry.status === "failed" || entry.status === "unknown" || entry.status === "queued") &&
+        entry.error && (
         <p className="mt-1.5 flex items-start gap-1.5 text-xs text-[#9E2A20]">
           <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden />
           {entry.error}
         </p>
       )}
-      {isFollowUp && (entry.status === "failed" || entry.status === "queued") && (
-        <div className="mt-2 flex flex-wrap items-center gap-2">
-          {entry.status === "queued" && (
-            <>
-              <span className="flex items-center gap-1 text-xs text-[#8A5A00]">
-                <Clock className="size-3.5" aria-hidden />
-                Not confirmed yet. Check before retrying to avoid a duplicate.
-              </span>
-              <Button type="button" size="sm" variant="outline" onClick={onRefresh} disabled={busy !== null}>
-                <RotateCcw />
-                Check status
-              </Button>
-            </>
-          )}
+      {isFollowUp && entry.status === "sending" && (
+        <p className="mt-2 flex items-center gap-1 text-xs text-[#8A5A00]">
+          <Clock className="size-3.5" aria-hidden />
+          Being sent right now.
+          <Button type="button" size="sm" variant="ghost" onClick={onRefresh} disabled={busy !== null}>
+            <RotateCcw />
+            Check status
+          </Button>
+        </p>
+      )}
+      {isFollowUp && entry.status === "failed" && (
+        <div className="mt-2">
           <Button
             type="button"
             size="sm"
@@ -92,6 +101,73 @@ function HistoryItem({
           </Button>
         </div>
       )}
+      {isFollowUp && (entry.status === "queued" || entry.status === "unknown") && (
+        <div className="mt-2 space-y-2">
+          <p className="flex items-start gap-1.5 text-xs text-[#8A5A00]">
+            <Clock className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+            {entry.status === "queued"
+              ? "Accepted, but delivery isn't confirmed."
+              : "We can't tell whether this was delivered."}{" "}
+            Check the customer&apos;s mail, then record what happened. Sending again
+            without checking could deliver it twice.
+          </p>
+          {confirming ? (
+            <div className="flex flex-wrap items-center gap-2 text-[13px]">
+              <span className="mr-auto">The customer may receive this twice. Send again?</span>
+              <Button
+                type="button"
+                size="sm"
+                onClick={() => {
+                  setConfirming(false);
+                  onRetry(entry.id, true);
+                }}
+                disabled={busy !== null}
+              >
+                <Send />
+                Yes, send again
+              </Button>
+              <Button type="button" size="sm" variant="outline" onClick={() => setConfirming(false)}>
+                Cancel
+              </Button>
+            </div>
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              <Button type="button" size="sm" variant="outline" onClick={onRefresh} disabled={busy !== null}>
+                <RotateCcw />
+                Check status
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => onReconcile(entry.id, "delivered")}
+                disabled={busy !== null}
+              >
+                {retrying ? <Loader2 className="animate-spin" aria-hidden /> : <CheckCircle2 />}
+                It was delivered
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => onReconcile(entry.id, "not_delivered")}
+                disabled={busy !== null}
+              >
+                It was not delivered
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                onClick={() => setConfirming(true)}
+                disabled={busy !== null}
+              >
+                Send again anyway…
+              </Button>
+            </div>
+          )}
+        </div>
+      )}
     </li>
   );
 }
@@ -102,7 +178,8 @@ export function CommunicationsPanel({ ticket }: { ticket: SupportTicketRecord })
   const sending = c.busy === "compose";
   const disabled = c.busy !== null;
   const trimmed = c.text.trim().length;
-  const hasEmail = Boolean(ticket.customerEmail?.trim());
+  const hasEmail =
+    typeof ticket.customerEmail === "string" && ticket.customerEmail.trim().length > 0;
 
   return (
     <Card>
@@ -206,6 +283,7 @@ export function CommunicationsPanel({ ticket }: { ticket: SupportTicketRecord })
                       entry={entry}
                       busy={c.busy}
                       onRetry={c.retry}
+                      onReconcile={c.reconcile}
                       onRefresh={c.refresh}
                     />
                   ))}

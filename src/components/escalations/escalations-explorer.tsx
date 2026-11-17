@@ -15,6 +15,8 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { TruncationNotice } from "@/components/ui/truncation-notice";
+import { MAX_TICKETS } from "@/lib/limits";
 import { useTickets } from "@/hooks/use-tickets";
 import {
   applyEscalationFilters,
@@ -31,7 +33,7 @@ import { EscalationsSkeleton } from "./escalations-skeleton";
 import { EscalationsTable } from "./escalations-table";
 
 export function EscalationsExplorer() {
-  const { tickets, error, loading, refreshing, updatedAt, refresh } =
+  const { tickets, error, loading, refreshing, updatedAt, truncated, refresh } =
     useTickets();
   const [filters, setFilters] = useState<EscalationFilters>(
     DEFAULT_ESCALATION_FILTERS,
@@ -98,6 +100,8 @@ export function EscalationsExplorer() {
           </Button>
         </div>
       </section>
+
+      {truncated && <TruncationNotice noun="tickets" limit={MAX_TICKETS} />}
 
       {loading && <EscalationsSkeleton />}
 
