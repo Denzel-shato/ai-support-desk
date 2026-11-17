@@ -23,11 +23,11 @@ export async function POST(
 ) {
   await connection();
   try {
-    await requireAuth(request);
+    const session = await requireAuth(request);
     const { id } = await context.params;
     if (!isValidDocumentId(id)) throw new InvalidTicketIdError();
     const outcome = parseReconcileRequest(await readJsonBody(request));
-    const ticket = await reconcileResponse(id, outcome);
+    const ticket = await reconcileResponse(id, outcome, undefined, undefined, session.sub);
     return NextResponse.json({ ticket }, { status: 200, headers: NO_STORE });
   } catch (error) {
     return responseErrorResponse(error, "api/tickets/[id]/reconcile");

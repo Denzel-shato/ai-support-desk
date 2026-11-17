@@ -14,6 +14,7 @@ import {
   type FollowUpMessage,
 } from "./communications";
 import { getAdminDb } from "./firebase-admin";
+import { buildEvent, newEventRef } from "./response-events";
 import {
   InvalidTicketIdError,
   TICKETS_COLLECTION,
@@ -96,6 +97,7 @@ export async function claimFollowUp(
   db: Firestore = getAdminDb(),
   nowMs: number = Date.now(),
   options: SendOptions = {},
+  actor: string | null = null,
 ): Promise<FollowUpClaim> {
   const { ticket, message } = refs(db, ticketId, messageId);
   return withTimeout(
@@ -116,6 +118,16 @@ export async function claimFollowUp(
       );
       if (claim.mode === "create") tx.create(message!, toStored(claim.fields));
       else tx.update(message!, toStored(claim.fields));
+      tx.create(
+        newEventRef(db, ticketId),
+        buildEvent("followup_claimed", nowMs, actor, {
+          messageId,
+          attempt: claim.attempt,
+          retryUnknown: options.retryUnknown === true,
+          previousStatus: messageSnap.exists ? (messageSnap.data()?.status ?? null) : null,
+          previousError: messageSnap.exists ? (messageSnap.data()?.error ?? null) : null,
+        }),
+      );
       return claim;
     }),
     TX_TIMEOUT_MS,
@@ -129,6 +141,7 @@ export async function recordFollowUpOutcome(
   outcome: WebhookOutcome,
   db: Firestore = getAdminDb(),
   nowMs: number = Date.now(),
+  attempt?: number,
 ): Promise<void> {
   const { message } = refs(db, ticketId, messageId);
   await withTimeout(
@@ -141,8 +154,20 @@ export async function recordFollowUpOutcome(
         snap.data() ?? {},
         outcome,
         new Date(nowMs).toISOString(),
+        attempt,
       );
-      if (fields) tx.update(message!, toStored(fields));
+      if (fields) {
+        tx.update(message!, toStored(fields));
+        tx.create(
+          newEventRef(db, ticketId),
+          buildEvent("followup_outcome", nowMs, null, {
+            messageId,
+            attempt,
+            result: outcome.kind,
+            message: "message" in outcome ? outcome.message : undefined,
+          }),
+        );
+      }
     }),
     TX_TIMEOUT_MS,
   );
@@ -155,6 +180,7 @@ export async function reconcileFollowUp(
   outcome: ReconcileOutcome,
   db: Firestore = getAdminDb(),
   nowMs: number = Date.now(),
+  actor: string | null = null,
 ): Promise<FollowUpMessage> {
   const { message } = refs(db, ticketId, messageId);
   await withTimeout(
@@ -167,6 +193,14 @@ export async function reconcileFollowUp(
         new Date(nowMs).toISOString(),
       );
       tx.update(message!, toStored(fields));
+      tx.create(
+        newEventRef(db, ticketId),
+        buildEvent("followup_reconciled", nowMs, actor, {
+          messageId,
+          outcome,
+          previousStatus: snap.data()?.status ?? null,
+        }),
+      );
     }),
     TX_TIMEOUT_MS,
   );

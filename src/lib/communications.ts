@@ -220,9 +220,11 @@ export function decideFollowUpRecord(
   existing: RawDoc | null,
   outcome: WebhookOutcome,
   nowIso: string,
+  attempt?: number,
 ): Record<string, unknown> | null {
   if (!existing) return null;
   if (normalizeResponseStatus(existing.status) !== "sending") return null;
+  if (attempt !== undefined && existing.attempts !== attempt) return null;
   switch (outcome.kind) {
     case "accepted":
       return { status: "queued", error: null };

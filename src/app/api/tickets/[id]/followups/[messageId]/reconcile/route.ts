@@ -19,14 +19,14 @@ export async function POST(
 ) {
   await connection();
   try {
-    await requireAuth(request);
+    const session = await requireAuth(request);
     const { id, messageId } = await context.params;
     if (!isValidDocumentId(id)) throw new InvalidTicketIdError();
     if (!isValidMessageId(messageId)) {
       throw new ResponseWorkflowError(400, "invalid_message_id", "The message ID must be a UUID.");
     }
     const outcome = parseReconcileRequest(await readJsonBody(request));
-    const message = await reconcileFollowUp(id, messageId, outcome);
+    const message = await reconcileFollowUp(id, messageId, outcome, undefined, undefined, session.sub);
     return NextResponse.json({ message }, { status: 200, headers: NO_STORE });
   } catch (error) {
     return responseErrorResponse(error, "api/tickets/[id]/followups/[messageId]/reconcile");

@@ -1,5 +1,11 @@
 # Changelog
 
+## Audit remediation, phase 3 (response lifecycle)
+
+- **Late results can't overwrite a newer attempt.** A retry reuses the idempotency key, so recording an outcome now also requires the attempt number to match (ticket and follow-up).
+- **Outcome write is retried** (twice, short delay; safe because it only applies while the claim is `sending`), and an unexpected error after a claim settles the send as `unknown` immediately instead of waiting for the claim to go stale.
+- **Append-only audit trail** in a new subcollection `support_tickets/{id}/response_events`, written in the same transaction as each change: approve/reject/reopen, edits (keeps the replaced text), send claims, outcomes, agent reconciliations, follow-up equivalents. `aiResponse` / `customerResponse` remain untouched. Nothing reads the collection yet (no UI).
+
 ## Audit remediation, phase 1
 
 Security, data integrity and delivery-safety fixes from the architecture audit. No Firestore schema change for tickets or articles. Added fields are listed below. One new dependency-free auth layer, one test suite (`npm test`).

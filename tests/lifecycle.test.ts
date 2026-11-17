@@ -60,8 +60,9 @@ test("approve stores finalResponse and never touches the original AI response", 
   assert.equal(doc.reviewStatus, "approved");
   assert.equal(doc.aiResponse, "Original AI reply");
   assert.equal(doc.customerResponse, "Original AI reply");
-  assert.equal(fake.writes.filter((w) => w.op === "create").length, 0, "an update must not create documents");
-  assert.equal(fake.data.size, 1);
+  const created = fake.writes.filter((w) => w.op === "create").map((w) => w.path);
+  assert.ok(created.every((p) => p.startsWith(`${T}/response_events/`)), "only audit events are created");
+  assert.equal(fake.data.size, 1 + created.length);
 });
 
 test("Low/Medium tickets refuse approval and sending even with a legacy awaiting_review", async () => {
@@ -252,6 +253,64 @@ test("follow-up reconcile and stale sending read as unknown in the history", asy
   assert.equal((await listFollowUps(TID, db, later))[0].status, "unknown", "stale claim reads as unknown, not failed");
   const m = await reconcileFollowUp(TID, MID, "delivered", db, later);
   assert.equal(m.status, "sent");
+});
+
+/* ---- late results, audit trail ---- */
+
+const events = (fake: FakeFirestore) =>
+  [...fake.data.entries()].filter(([k]) => k.startsWith(`${T}/response_events/`)).map(([, v]) => v);
+
+test("a late answer from an older attempt cannot overwrite a newer attempt's claim", async () => {
+  const { fake, db } = setup();
+  await applyReviewAction(TID, "approve", "Final text", db, NOW);
+  const a1 = await claimResponseSend(TID, db, NOW);
+  await recordSendOutcome(TID, a1.idempotencyKey, { kind: "unknown", message: "?" }, db, NOW, a1.attempt);
+  const a2 = await claimResponseSend(TID, db, NOW + 1, { retryUnknown: true });
+  assert.equal(a2.idempotencyKey, a1.idempotencyKey, "same key on retry");
+  assert.equal(a2.attempt, 2);
+  // Attempt 1's request finally reports a failure: it must be ignored.
+  await recordSendOutcome(TID, a1.idempotencyKey, { kind: "failed", message: "late" }, db, NOW + 2, a1.attempt);
+  assert.equal(fake.read(T)!.responseStatus, "sending");
+  await recordSendOutcome(TID, a2.idempotencyKey, { kind: "sent", sentAt: null, messageId: null }, db, NOW + 3, a2.attempt);
+  assert.equal(fake.read(T)!.responseStatus, "sent");
+});
+
+test("a late answer from an older follow-up attempt is ignored the same way", async () => {
+  const { fake, db } = setup();
+  await claimFollowUp(TID, MID, "Hi", db, NOW);
+  await recordFollowUpOutcome(TID, MID, { kind: "unknown", message: "?" }, db, NOW, 1);
+  await claimFollowUp(TID, MID, undefined, db, NOW + 1, { retryUnknown: true });
+  await recordFollowUpOutcome(TID, MID, { kind: "failed", message: "late" }, db, NOW + 2, 1);
+  assert.equal(fake.read(`${T}/messages/${MID}`)!.status, "sending");
+});
+
+test("audit trail: edits keep the replaced text; claims, outcomes and reconciliations are recorded", async () => {
+  const { fake, db } = setup();
+  await applyReviewAction(TID, "approve", "First version", db, NOW, "admin");
+  await applyReviewAction(TID, "reopen", "Second version", db, NOW + 1, "admin");
+  await applyReviewAction(TID, "approve", undefined, db, NOW + 2, "admin");
+  const c = await claimResponseSend(TID, db, NOW + 3, {}, "admin");
+  await recordSendOutcome(TID, c.idempotencyKey, { kind: "unknown", message: "timeout" }, db, NOW + 4, c.attempt);
+  await reconcileResponse(TID, "delivered", db, NOW + 5, "admin");
+
+  const all = events(fake);
+  const types = all.map((e) => e.type);
+  for (const t of ["review_approve", "review_reopen", "response_edited", "send_claimed", "send_outcome", "reconciled"]) {
+    assert.ok(types.includes(t), `missing ${t} event`);
+  }
+  const edit = all.find((e) => e.type === "response_edited" && e.finalResponse === "Second version")!;
+  assert.equal(edit.previousFinalResponse, "First version");
+  assert.equal(all.find((e) => e.type === "reconciled")!.previousStatus, "unknown");
+  assert.equal(all.find((e) => e.type === "send_claimed")!.actor, "admin");
+  // The original AI response is never modified by any of it.
+  assert.equal(fake.read(T)!.aiResponse, "Original AI reply");
+  assert.equal(fake.read(T)!.customerResponse, "Original AI reply");
+});
+
+test("a refused action leaves no audit event behind", async () => {
+  const { fake, db } = setup();
+  await rejects(claimResponseSend(TID, db, NOW), "not_approved");
+  assert.equal(events(fake).length, 0);
 });
 
 /* ---- missing documents, invalid input ---- */

@@ -12,9 +12,10 @@ import {
   callSendWebhook,
   readWebhookConfig,
 } from "@/lib/n8n-send-response";
+import { retryShort } from "@/lib/retry";
 import { readJsonBody } from "@/lib/request-guard";
 import { responseErrorResponse } from "@/lib/response-api-errors";
-import { ResponseWorkflowError } from "@/lib/response-workflow";
+import { ResponseWorkflowError, UNKNOWN_MESSAGE } from "@/lib/response-workflow";
 import { errorResponse, NO_STORE } from "@/lib/ticket-api-errors";
 
 export const maxDuration = 30;
@@ -44,7 +45,7 @@ export async function POST(
   await connection();
 
   try {
-    await requireAuth(request);
+    const session = await requireAuth(request);
     const { id } = await context.params;
     if (!isValidDocumentId(id)) throw new InvalidTicketIdError();
 
@@ -61,13 +62,28 @@ export async function POST(
 
     const claim = await claimFollowUp(id, messageId, body?.content, undefined, undefined, {
       retryUnknown: body?.retryUnknown === true,
-    });
-    const payload = buildFollowUpPayload(id, claim, new Date().toISOString());
-    const outcome = await callSendWebhook(config, payload);
+    }, session.sub);
+    let outcome;
+    try {
+      const payload = buildFollowUpPayload(id, claim, new Date().toISOString());
+      outcome = await callSendWebhook(config, payload);
+    } catch (error) {
+      await recordFollowUpOutcome(
+        id,
+        messageId,
+        { kind: "unknown", message: UNKNOWN_MESSAGE },
+        undefined,
+        undefined,
+        claim.attempt,
+      ).catch(() => undefined);
+      throw error;
+    }
 
     let warning: string | undefined;
     try {
-      await recordFollowUpOutcome(id, messageId, outcome);
+      await retryShort(() =>
+        recordFollowUpOutcome(id, messageId, outcome, undefined, undefined, claim.attempt),
+      );
     } catch (error) {
       console.error(
         `[api/tickets/[id]/followups] Could not record the outcome (${outcome.kind}) for ticket ${id}, message ${messageId}:`,

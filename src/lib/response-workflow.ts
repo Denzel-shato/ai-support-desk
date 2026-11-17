@@ -686,7 +686,8 @@ export function interpretWebhookResponse(
 /**
  * The fields to write once n8n has answered, or null to write nothing. The
  * record is only written while this attempt's claim is still "sending":
- *  - a newer attempt (different key) is never overwritten;
+ *  - a newer attempt (different key, or the same key with a higher attempt
+ *    number) is never overwritten;
  *  - a ticket already "sent" is never changed, so a late failure can't undo a
  *    delivery n8n recorded first;
  *  - a ticket an agent already reconciled is left as they set it.
@@ -696,9 +697,13 @@ export function decideSendRecord(
   idempotencyKey: string,
   outcome: WebhookOutcome,
   nowIso: string,
+  attempt?: number,
 ): Record<string, unknown> | null {
   if (clean(raw.responseSendId) !== idempotencyKey) return null;
   if (normalizeResponseStatus(raw.responseStatus) !== "sending") return null;
+  // A retry reuses the key, so the key alone can't tell attempt 1's late
+  // answer from attempt 2's claim. The attempt number can.
+  if (attempt !== undefined && raw.responseAttempts !== attempt) return null;
 
   switch (outcome.kind) {
     case "accepted":

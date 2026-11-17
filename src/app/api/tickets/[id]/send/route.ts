@@ -11,6 +11,8 @@ import {
   callSendWebhook,
   readWebhookConfig,
 } from "@/lib/n8n-send-response";
+import { retryShort } from "@/lib/retry";
+import { UNKNOWN_MESSAGE } from "@/lib/response-workflow";
 import { readJsonBody } from "@/lib/request-guard";
 import { responseErrorResponse } from "@/lib/response-api-errors";
 import { errorResponse, NO_STORE } from "@/lib/ticket-api-errors";
@@ -44,7 +46,7 @@ export async function POST(
   await connection();
 
   try {
-    await requireAuth(request);
+    const session = await requireAuth(request);
     const { id } = await context.params;
     if (!isValidDocumentId(id)) throw new InvalidTicketIdError();
 
@@ -55,13 +57,32 @@ export async function POST(
     const retryUnknown = body?.retryUnknown === true;
     const config = readWebhookConfig();
 
-    const claim = await claimResponseSend(id, undefined, undefined, { retryUnknown });
-    const payload = buildWebhookPayload(id, claim, new Date().toISOString());
-    const outcome = await callSendWebhook(config, payload);
+    const claim = await claimResponseSend(id, undefined, undefined, { retryUnknown }, session.sub);
+    let outcome;
+    try {
+      const payload = buildWebhookPayload(id, claim, new Date().toISOString());
+      outcome = await callSendWebhook(config, payload);
+    } catch (error) {
+      // Something unexpected threw after the claim. Whether the webhook was
+      // reached is unclear, so settle as "unknown" now instead of leaving the
+      // ticket "sending" until the claim goes stale.
+      await recordSendOutcome(
+        id,
+        claim.idempotencyKey,
+        { kind: "unknown", message: UNKNOWN_MESSAGE },
+        undefined,
+        undefined,
+        claim.attempt,
+      ).catch(() => undefined);
+      throw error;
+    }
 
     let warning: string | undefined;
     try {
-      await recordSendOutcome(id, claim.idempotencyKey, outcome);
+      // Safe to repeat: it only writes while this attempt's claim is "sending".
+      await retryShort(() =>
+        recordSendOutcome(id, claim.idempotencyKey, outcome, undefined, undefined, claim.attempt),
+      );
     } catch (error) {
       console.error(
         `[api/tickets/[id]/send] Could not record the outcome (${outcome.kind}) for ticket ${id}, key ${claim.idempotencyKey}:`,

@@ -17,12 +17,15 @@ import {
   decideSendClaim,
   decideSendRecord,
   decideTicketReconcile,
+  normalizeResponseStatus,
+  normalizeResponseText,
   type ReconcileOutcome,
   type ReviewAction,
   type SendClaim,
   type SendOptions,
   type WebhookOutcome,
 } from "./response-workflow";
+import { buildEvent, newEventRef } from "./response-events";
 import { serializeTicket } from "./ticket-serialization";
 import type { SupportTicketRecord } from "./types";
 
@@ -69,19 +72,37 @@ export async function applyReviewAction(
   finalResponse: string | undefined,
   db: Firestore = getAdminDb(),
   nowMs: number = Date.now(),
+  actor: string | null = null,
 ): Promise<SupportTicketRecord> {
   const ref = ticketRef(db, id);
   await withTimeout(
     db.runTransaction(async (tx) => {
       const snap = await tx.get(ref);
       if (!snap.exists) throw new TicketNotFoundError(id);
-      const fields = decideReviewUpdate(
-        snap.data() ?? {},
-        action,
-        finalResponse,
-        nowMs,
-      );
+      const raw = snap.data() ?? {};
+      const fields = decideReviewUpdate(raw, action, finalResponse, nowMs);
       tx.update(ref, toStored(fields));
+      tx.create(
+        newEventRef(db, id),
+        buildEvent(`review_${action}`, nowMs, actor, {
+          previousReviewStatus: typeof raw.reviewStatus === "string" ? raw.reviewStatus : null,
+        }),
+      );
+      // Keep the text this edit replaced: finalResponse is overwritten in place.
+      if (typeof fields.finalResponse === "string") {
+        const before = normalizeResponseText(
+          typeof raw.finalResponse === "string" ? raw.finalResponse : "",
+        );
+        if (before !== fields.finalResponse) {
+          tx.create(
+            newEventRef(db, id),
+            buildEvent("response_edited", nowMs, actor, {
+              previousFinalResponse: before || null,
+              finalResponse: fields.finalResponse,
+            }),
+          );
+        }
+      }
     }),
     TX_TIMEOUT_MS,
   );
@@ -98,6 +119,7 @@ export async function claimResponseSend(
   db: Firestore = getAdminDb(),
   nowMs: number = Date.now(),
   options: SendOptions = {},
+  actor: string | null = null,
 ): Promise<SendClaim> {
   const ref = ticketRef(db, id);
   return withTimeout(
@@ -112,6 +134,18 @@ export async function claimResponseSend(
         options,
       );
       tx.update(ref, toStored(claim.fields));
+      const raw = snap.data() ?? {};
+      tx.create(
+        newEventRef(db, id),
+        buildEvent("send_claimed", nowMs, actor, {
+          attempt: claim.attempt,
+          idempotencyKey: claim.idempotencyKey,
+          retryUnknown: options.retryUnknown === true,
+          previousStatus: normalizeResponseStatus(raw.responseStatus),
+          previousError: typeof raw.responseError === "string" ? raw.responseError : null,
+          recipient: claim.recipient,
+        }),
+      );
       return claim;
     }),
     TX_TIMEOUT_MS,
@@ -128,6 +162,7 @@ export async function recordSendOutcome(
   outcome: WebhookOutcome,
   db: Firestore = getAdminDb(),
   nowMs: number = Date.now(),
+  attempt?: number,
 ): Promise<void> {
   const ref = ticketRef(db, id);
   await withTimeout(
@@ -139,8 +174,20 @@ export async function recordSendOutcome(
         idempotencyKey,
         outcome,
         new Date(nowMs).toISOString(),
+        attempt,
       );
-      if (fields) tx.update(ref, toStored(fields));
+      if (fields) {
+        tx.update(ref, toStored(fields));
+        tx.create(
+          newEventRef(db, id),
+          buildEvent("send_outcome", nowMs, null, {
+            attempt,
+            idempotencyKey,
+            result: outcome.kind,
+            message: "message" in outcome ? outcome.message : undefined,
+          }),
+        );
+      }
     }),
     TX_TIMEOUT_MS,
   );
@@ -155,6 +202,7 @@ export async function reconcileResponse(
   outcome: ReconcileOutcome,
   db: Firestore = getAdminDb(),
   nowMs: number = Date.now(),
+  actor: string | null = null,
 ): Promise<SupportTicketRecord> {
   const ref = ticketRef(db, id);
   await withTimeout(
@@ -168,6 +216,15 @@ export async function reconcileResponse(
         new Date(nowMs).toISOString(),
       );
       tx.update(ref, toStored(fields));
+      const raw = snap.data() ?? {};
+      tx.create(
+        newEventRef(db, id),
+        buildEvent("reconciled", nowMs, actor, {
+          outcome,
+          previousStatus: normalizeResponseStatus(raw.responseStatus),
+          idempotencyKey: typeof raw.responseSendId === "string" ? raw.responseSendId : null,
+        }),
+      );
     }),
     TX_TIMEOUT_MS,
   );
