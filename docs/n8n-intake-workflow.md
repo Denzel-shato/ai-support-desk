@@ -62,6 +62,43 @@ aliases) and a test runs both over every priority x evaluation x article-count c
 New ticket field: `intakeIssue` (string, only on failed/invalid intake). Existing tickets are unaffected, except that a
 legacy Low/Medium ticket stored with `kbStatus: not_covered` or `escalationRequired: true` now counts as needing review.
 
+## Public intake validation and abuse protection (phase 4B)
+
+**Implemented (enforced inside the workflow).** `Form Trigger -> Validate submission -> Is submission valid`. Only the
+"valid" output continues to Gemini, Firestore and Gmail; the other output ends at `Rejected submission (stop)`.
+Checked in the Code node, so posting straight to the form URL does not bypass it:
+
+| Field | Rule |
+|---|---|
+| Name | required, text, max 100 chars, whitespace collapsed, no control characters/line breaks |
+| Email | required, text, max 254, one `@`, dotted domain, no spaces or `, ; < > ( ) " \`, no `..`, no line breaks (header injection), local part max 64 |
+| Message | required, text, non-empty after trimming, **max 5,000 characters** (after trimming), control characters stripped, line breaks kept |
+
+A rejected item carries only `{field, code}` errors, never the submitted text. Valid values leave the node trimmed under
+the original field labels, and every later node (prompts, `Build ticket`) reads them from `Validate submission`, not from
+the raw form. The three form fields are also marked required in the Form Trigger: that is browser-side only (UX), not security.
+
+**Limitation: the submitter is not told.** The Form Trigger answers with its completion page as soon as the form is
+posted, before the workflow runs, so a rejected visitor sees "submitted" and nothing is created or emailed. Telling them
+requires the Form Trigger's "respond when last node finishes" mode plus a Form ending page; that changes the normal
+visitor experience and wasn't verified, so it is left out. The browser-side `required`/email checks still stop honest mistakes.
+
+**NOT protected (no rate limiting, no bot protection is implemented).**
+- The Form Trigger has no rate limit, CAPTCHA or honeypot setting, and cannot host a CAPTCHA widget. An in-memory
+  counter in a Code node would reset on restarts and doesn't span executions, so none was added.
+- A bot posting *valid-looking* submissions still creates tickets and Gemini calls, and (for Low/Medium covered issues)
+  sends an acknowledgement email to whatever address it typed. Validation only stops malformed input.
+- Execution data for rejected submissions is still stored by n8n like any other execution.
+
+**Smallest practical options, in order (none are done):**
+1. **Rate-limit the form URL at the edge.** If n8n is self-hosted, put it behind Cloudflare (or your reverse proxy) with a
+   rate-limiting rule on the form path, e.g. a handful of POSTs per IP per minute. No code and no new dependency. n8n Cloud
+   gives no such control.
+2. **If you need a real CAPTCHA:** replace the Form Trigger with a small public form page that posts to an n8n Webhook,
+   verify the Cloudflare Turnstile / reCAPTCHA token server-side in the first node, then run `Validate submission`. This
+   is a new public page, so do it only if option 1 isn't enough.
+3. **Cap spend:** set a budget/quota on the Gemini API key so abuse can't run up cost.
+
 ## What is verified and what is not
 
 Verified by `npm test` (runs the Code-node sources in plain Node with a stand-in for n8n's `$`):
@@ -79,6 +116,7 @@ email templates exists; HTML is escaped.
 - Gmail sends HTML as before and the escaped text renders correctly.
 - That "continue on error" on the Gemini and Firestore nodes delivers an item with an `error` field in your n8n version (the code treats a missing/invalid `content.parts[0].text` as a failure either way).
 - That omitted fields (`intakeIssue`, `priority` on a failed classification, ...) are really omitted by the Create node.
+- That the Form Trigger passes `requiredField` and the form values under the same labels as before, and that the new Code/If/NoOp nodes import in your version.
 - Behaviour with a very large knowledge base (all active articles go into one prompt: watch the token limit).
 
 ## Suggested first test

@@ -32,8 +32,9 @@ const model = (obj: unknown) => [{ json: { content: { parts: [{ text: typeof obj
 const form = [{ json: { "Your Name": "Ada", "Your Email": "ada@example.com", "What is it you would like us to fix ?": "App crashes" } }];
 const classification = (priority: string) => model({ category: "Bug", reason: "r", sentiment: "Negative", priority, summary: "s" });
 const evaluation = model({ kbStatus: "covered", relevantSection: "Crash", coverageReason: "c", supportedSteps: ["Reinstall"], unsupportedParts: [], escalationRequired: false, customerResponse: "Hello Ada" });
+const validated = [{ json: { valid: true, errors: [], ...form[0].json } }];
 const kbOk = [{ json: { articleCount: 2, kbUnavailable: false } }];
-const ctx = (priority: string) => ({ nodes: { "Form Trigger": form, "Message a model": classification(priority), "Select active articles": kbOk, "Message a model1": evaluation } });
+const ctx = (priority: string) => ({ nodes: { "Validate submission": validated, "Message a model": classification(priority), "Select active articles": kbOk, "Message a model1": evaluation } });
 // What a Gemini node returns when it fails with "continue on error".
 const geminiError = [{ json: { error: "503 The model is overloaded" } }];
 
@@ -244,9 +245,9 @@ test("graph: single linear path, ONE Firestore create, no upsert, every connecti
     assert.ok(names.has(from));
     for (const branch of c.main) for (const to of branch) assert.ok(names.has(to.node), `${from} -> ${to.node}`);
   }
-  // Only the "If" fans out, and only into the two notification emails.
+  // Only the two Ifs fan out: the validity gate, and the escalation split into the two notification emails.
   const fanOut = Object.entries<any>(wf.connections).filter(([, c]) => c.main.length > 1 || c.main[0].length > 1);
-  assert.deepEqual(fanOut.map(([n]) => n), ["If"]);
+  assert.deepEqual(fanOut.map(([n]) => n).sort(), ["If", "Is submission valid"]);
   assert.deepEqual(wf.connections.If.main.map((b: any[]) => b[0].node), ["Send a message", "Send a message1"]);
   assert.equal(wf.active, false, "must not auto-activate on import");
 });
@@ -285,4 +286,113 @@ test("the workflow file holds no personal email address, instance ID, credential
   const text = JSON.stringify(wf);
   assert.doesNotMatch(text, /@gmail\.com|instanceId|webhookId/);
   for (const n of nodes) for (const c of Object.values<any>(n.credentials ?? {})) assert.equal("id" in c, false);
+});
+
+
+/* ---- public intake validation (phase 4B) ---- */
+
+const NAME = "Your Name", EMAIL = "Your Email", MSG = "What is it you would like us to fix ?";
+const submit = (o: Record<string, unknown>) => run("validate-submission.js", { nodes: { "Form Trigger": [{ json: o }] } });
+const good: Record<string, string> = { [NAME]: "Ada Lovelace", [EMAIL]: "ada@example.com", [MSG]: "The app crashes when I upload a photo." };
+const rejected = (o: Record<string, unknown>, field: string, code?: string) => {
+  const out = submit(o);
+  assert.equal(out.length, 1);
+  assert.equal(out[0].json.valid, false);
+  const e = out[0].json.errors.find((x: any) => x.field === field);
+  assert.ok(e, `expected an error on ${field}, got ${JSON.stringify(out[0].json.errors)}`);
+  if (code) assert.equal(e.code, code);
+  assert.deepEqual(Object.keys(out[0].json).sort(), ["errors", "valid"], "a rejected submission carries no submitted text forward");
+};
+
+test("valid submission passes and comes out trimmed, under the same field labels", () => {
+  const out = submit({ [NAME]: "  Ada   Lovelace ", [EMAIL]: " Ada@Example.com ", [MSG]: "  line one\r\nline two  " });
+  assert.equal(out[0].json.valid, true);
+  assert.equal(out[0].json[NAME], "Ada Lovelace");
+  assert.equal(out[0].json[EMAIL], "Ada@Example.com");
+  assert.equal(out[0].json[MSG], "line one\nline two");
+  assert.equal(submit(good)[0].json.valid, true);
+});
+
+test("missing or blank name, email and message are rejected (each reported)", () => {
+  const key: Record<string, string> = { [NAME]: "name", [EMAIL]: "email", [MSG]: "message" };
+  for (const f of [NAME, EMAIL, MSG]) {
+    const without = { ...good };
+    delete without[f];
+    rejected(without, key[f], "missing");
+    rejected({ ...good, [f]: "" }, key[f], "empty");
+  }
+  const all = submit({});
+  assert.deepEqual(all[0].json.errors.map((e: any) => e.field).sort(), ["email", "message", "name"]);
+});
+
+test("whitespace-only (spaces, tabs, line breaks, NBSP) name and message are rejected", () => {
+  for (const blank of ["   ", "\t\t", "\n\r\n \n", "\u00a0\u00a0"]) {
+    rejected({ ...good, [MSG]: blank }, "message", "empty");
+    rejected({ ...good, [NAME]: blank }, "name");
+  }
+});
+
+test("malformed email addresses are rejected, including header-injection attempts", () => {
+  for (const bad of ["plainaddress", "@example.com", "ada@", "ada@example", "ada@@example.com", "a da@example.com", "ada@exa mple.com", "ada@example..com", ".ada@example.com", "ada.@example.com", "ada@.example.com", "ada@example.com.", "ada@-example.com", "<ada@example.com>", "ada@example.com, eve@example.com", "ada@example.com;eve@example.com", "\"ada\"@example.com", "ada@example.com\nBcc: eve@example.com", "ada@example.com\r\nSubject: hi", `${"a".repeat(65)}@example.com`, `ada@${"b".repeat(250)}.com`]) {
+    const out = submit({ ...good, [EMAIL]: bad });
+    assert.equal(out[0].json.valid, false, JSON.stringify(bad));
+    assert.ok(out[0].json.errors.some((e: any) => e.field === "email"), JSON.stringify(bad));
+  }
+  for (const ok of ["ada@example.com", "ada.lovelace+tag@sub.example.co.uk", "a_b-c@ex-ample.org"]) assert.equal(submit({ ...good, [EMAIL]: ok })[0].json.valid, true, ok);
+});
+
+test("message length: exactly the maximum is accepted, one over is rejected", () => {
+  assert.equal(submit({ ...good, [MSG]: "x".repeat(5000) })[0].json.valid, true);
+  rejected({ ...good, [MSG]: "x".repeat(5001) }, "message", "too_long");
+  rejected({ ...good, [MSG]: "y".repeat(200_000) }, "message", "too_long");
+  rejected({ ...good, [NAME]: "n".repeat(101) }, "name", "too_long");
+  // Trimming happens before the limit: padding doesn't count against the customer.
+  assert.equal(submit({ ...good, [MSG]: " ".repeat(3000) + "x".repeat(5000) + " ".repeat(3000) })[0].json.valid, true);
+});
+
+test("non-text values (a hand-crafted POST) and control characters in name/email are rejected", () => {
+  for (const v of [123, true, ["a"], { a: 1 }]) {
+    rejected({ ...good, [MSG]: v }, "message", "not_text");
+    rejected({ ...good, [NAME]: v }, "name", "not_text");
+    rejected({ ...good, [EMAIL]: v }, "email", "not_text");
+  }
+  rejected({ ...good, [NAME]: "Ada\nBcc: eve@example.com" }, "name", "invalid_characters");
+  rejected({ ...good, [NAME]: "Ada\u0000" }, "name", "invalid_characters");
+  assert.equal(submit({ ...good, [MSG]: "a\u0000b\u0007c" })[0].json[MSG], "abc", "control characters are stripped from a message");
+});
+
+test("graph: nothing that calls Gemini, Firestore or Gmail is reachable except through the 'valid' branch", () => {
+  assert.deepEqual(wf.connections["Form Trigger"].main[0].map((c: any) => c.node), ["Validate submission"]);
+  assert.deepEqual(wf.connections["Validate submission"].main[0].map((c: any) => c.node), ["Is submission valid"]);
+  const gate = wf.connections["Is submission valid"].main.map((b: any[]) => b.map((c) => c.node));
+  assert.deepEqual(gate, [["Message a model"], ["Rejected submission (stop)"]]);
+  assert.equal(wf.connections["Rejected submission (stop)"], undefined, "the rejected branch ends there");
+  // Reachable from the rejected branch: nothing.
+  const external = (n: Node) => /gemini|firestore|gmail/i.test(n.type);
+  const reach = (start: string) => {
+    const seen = new Set<string>(), stack = [start];
+    while (stack.length) { const c = stack.pop()!; if (seen.has(c)) continue; seen.add(c); for (const b of wf.connections[c]?.main ?? []) for (const t of b) stack.push(t.node); }
+    return seen;
+  };
+  assert.equal([...reach("Rejected submission (stop)")].some((n) => external(byName(n))), false);
+  // Every external-calling node is only reachable through the gate's valid output.
+  const withoutGate = (() => {
+    const seen = new Set<string>(), stack = ["Form Trigger"];
+    while (stack.length) {
+      const c = stack.pop()!; if (seen.has(c)) continue; seen.add(c);
+      const branches = wf.connections[c]?.main ?? [];
+      branches.forEach((b: any[], i: number) => { if (c === "Is submission valid" && i === 0) return; for (const t of b) stack.push(t.node); });
+    }
+    return seen;
+  })();
+  assert.deepEqual([...withoutGate].filter((n) => external(byName(n))), []);
+  assert.deepEqual(byName("Validate submission").parameters.jsCode, read("code/validate-submission.js"));
+});
+
+test("downstream nodes read the validated values, never the raw form", () => {
+  const text = JSON.stringify(wf.nodes.filter((n: Node) => n.name !== "Validate submission"));
+  assert.equal(/\$\('Form Trigger'\)/.test(text), false);
+  const form = byName("Form Trigger").parameters.formFields.values;
+  assert.ok(form.every((f: any) => f.requiredField === true));
+  assert.equal(wf.active, false);
 });

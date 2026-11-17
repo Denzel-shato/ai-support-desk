@@ -20,7 +20,9 @@
 //     kbStatus covered or partially_covered, escalationRequired false, no
 //     intakeIssue, and a response exists. Otherwise escalationStatus is
 //     "required", which sends the ticket to staff and sends the customer nothing.
-const form = $('Form Trigger').first().json;
+// Cleaned, validated values (same labels as the form). Nothing reaches this node unless
+// 'Validate submission' accepted it.
+const form = $('Validate submission').first().json;
 
 const PRIORITIES = { low: 'Low', medium: 'Medium', high: 'High', urgent: 'Urgent' };
 const CATEGORIES = {

@@ -1,5 +1,10 @@
 # Changelog
 
+## Audit remediation, phase 4B (public intake validation)
+
+- New first step in the proposed intake workflow, `Validate submission` + `Is submission valid`: name, a well-formed email and a non-empty message (max 5,000 characters) are required; invalid submissions stop before Gemini, Firestore and Gmail. Later nodes read the cleaned values from this node.
+- **Not implemented, and documented as such:** rate limiting and bot protection. The Form Trigger can't enforce them; see `docs/n8n-intake-workflow.md` for the options. Proposed workflow only; not imported or run.
+
 ## Audit remediation, phase 4A (intake reliability and routing)
 
 - **No more lost submissions.** Gemini and knowledge-base-read failures create a manual-handling ticket (original submission, `intakeIssue`, escalated, no invented classification or response) instead of aborting the run.
