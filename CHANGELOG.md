@@ -1,5 +1,11 @@
 # Changelog
 
+## Agent-initiated email delivery: n8n receiver workflow
+
+- New proposed workflow `n8n/ai-support-desk-send-response.json` (inactive, 21 nodes) for the existing dashboard send webhook: header auth, payload and ticket validation, duplicate protection through `n8n_send_log`, one Gmail send, honest `sent` / `failed` / `unknown` answers. Separate from intake: acknowledgements, escalation emails, Gemini and routing are unchanged. n8n never writes tickets; the dashboard records the outcome.
+- New tests `tests/send-workflow.test.ts` (graph, validation, duplicate protection, Gmail error classification, dashboard contract). `docs/n8n-send-response-workflow.md` rewritten to match; intake doc note on omitted fields corrected.
+- **Not tested against real n8n activation, Gmail or Firestore.** Manual configuration steps are in the doc.
+
 ## Audit remediation, phase 4B (public intake validation)
 
 - New first step in the proposed intake workflow, `Validate submission` + `Is submission valid`: name, a well-formed email and a non-empty message (max 5,000 characters) are required; invalid submissions stop before Gemini, Firestore and Gmail. Later nodes read the cleaned values from this node.

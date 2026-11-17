@@ -115,7 +115,7 @@ email templates exists; HTML is escaped.
 - The Create node's output carries `_id` and the stored fields so the email expressions resolve.
 - Gmail sends HTML as before and the escaped text renders correctly.
 - That "continue on error" on the Gemini and Firestore nodes delivers an item with an `error` field in your n8n version (the code treats a missing/invalid `content.parts[0].text` as a failure either way).
-- That omitted fields (`intakeIssue`, `priority` on a failed classification, ...) are really omitted by the Create node.
+- Omitted fields: reading the n8n 2.x Firestore node source (not running it) shows the Create node writes a listed column that is missing from the item as `null`, not as an absent field. The dashboard only checks `intakeIssue` as a non-empty string and `escalatedAt`/`priority` leniently, so null is expected to be harmless, but confirm in a test run.
 - That the Form Trigger passes `requiredField` and the form values under the same labels as before, and that the new Code/If/NoOp nodes import in your version.
 - Behaviour with a very large knowledge base (all active articles go into one prompt: watch the token limit).
 

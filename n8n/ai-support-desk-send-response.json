@@ -1,0 +1,722 @@
+{
+  "name": "AI Support Desk: send approved response (proposed, untested)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "send-support-response",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -1200,
+        0
+      ],
+      "id": "c2000000-0000-4000-8000-000000000001",
+      "name": "Webhook",
+      "credentials": {
+        "httpHeaderAuth": {
+          "name": "Send response webhook secret"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code node \"Validate payload\"  (Run Once for All Items)\n//\n// First step after the authenticated Webhook, before Firestore or Gmail. The\n// dashboard builds this payload from the stored ticket, but this workflow is a\n// public URL protected only by a shared secret, so it checks everything itself.\n//\n// Output: ONE item.\n//   ok: true  -> `p` holds the cleaned values every later node reads.\n//   ok: false -> `code` + `body`, ready for the \"Respond\" node (400). The\n//                submitted text is never echoed back.\nconst raw = $input.first().json;\nconst b = raw && typeof raw.body === 'object' && raw.body !== null && !Array.isArray(raw.body) ? raw.body : {};\nconst bad = [];\nconst CONTROL = /[\\u0000-\\u001f\\u007f]/;\nconst ID = /^[A-Za-z0-9_-]+$/;\n\nconst id = (v, name, min, max) => {\n  if (typeof v !== 'string' || v.length < min || v.length > max || !ID.test(v)) {\n    bad.push(name);\n    return null;\n  }\n  return v;\n};\n\nconst ticketId = id(b.ticketId, 'ticketId', 1, 128);\nconst key = id(b.idempotencyKey, 'idempotencyKey', 8, 128);\n\nconst types = ['initial_response', 'follow_up'];\nconst messageType = types.includes(b.messageType) ? b.messageType : (bad.push('messageType'), null);\n\n// Exactly one plain address: no list, no display name, no line breaks.\nlet customerEmail = null;\nif (typeof b.customerEmail === 'string') {\n  const e = b.customerEmail.trim();\n  const at = e.indexOf('@');\n  const domain = e.slice(at + 1);\n  const ok =\n    e.length <= 254 &&\n    at > 0 &&\n    at === e.lastIndexOf('@') &&\n    at <= 64 &&\n    !CONTROL.test(e) &&\n    !/[\\s,;<>()\"\\\\]/.test(e) &&\n    /^[^.][^\\s]*\\.[^.\\s]+$/.test(domain) &&\n    !domain.includes('..') &&\n    !e.slice(0, at).includes('..') &&\n    !e.startsWith('.') &&\n    !e.slice(0, at).endsWith('.');\n  if (ok) customerEmail = e;\n}\nif (!customerEmail) bad.push('customerEmail');\n\nlet subject = null;\nif (typeof b.subject === 'string' && b.subject.trim() && b.subject.length <= 200 && !CONTROL.test(b.subject)) {\n  subject = b.subject.trim();\n} else bad.push('subject');\n\nconst norm = (s) => String(s).replace(/\\r\\n?/g, '\\n').trim();\nlet messageBody = null;\nif (typeof b.messageBody === 'string' && norm(b.messageBody) && norm(b.messageBody).length <= 10000) {\n  messageBody = norm(b.messageBody);\n} else bad.push('messageBody');\n\n// Both fields carry the same text for an initial response; a mismatch means the payload was altered.\nif (messageType === 'initial_response' && b.finalResponse !== undefined && messageBody !== null && norm(b.finalResponse) !== messageBody) {\n  bad.push('finalResponse');\n}\nif (messageType === 'follow_up' && b.messageId !== undefined && b.messageId !== key) bad.push('messageId');\nconst attempt = Number.isInteger(b.attempt) && b.attempt >= 1 ? b.attempt : 1;\n\nif (bad.length) {\n  return [{ json: { ok: false, code: 400, body: { status: 'failed', error: 'Invalid payload', fields: bad } } }];\n}\nreturn [{ json: { ok: true, p: { ticketId, key, messageType, customerEmail, subject, messageBody, attempt } } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -960,
+        0
+      ],
+      "id": "c2000000-0000-4000-8000-000000000002",
+      "name": "Validate payload"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c2000000-0000-4000-8000-000000000003",
+              "leftValue": "={{ $json.ok === true ? \"yes\" : \"no\" }}",
+              "rightValue": "yes",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -740,
+        0
+      ],
+      "id": "c2000000-0000-4000-8000-000000000004",
+      "name": "Payload valid"
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "get",
+        "projectId": "ai-support-desk-9c4ed",
+        "collection": "support_tickets",
+        "documentId": "={{ $('Validate payload').first().json.p.ticketId }}"
+      },
+      "type": "n8n-nodes-base.googleFirebaseCloudFirestore",
+      "typeVersion": 1.1,
+      "position": [
+        -520,
+        -120
+      ],
+      "id": "c2000000-0000-4000-8000-000000000005",
+      "name": "Get ticket",
+      "credentials": {
+        "googleApi": {
+          "name": "Google Service Account account"
+        }
+      },
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code node \"Check ticket\"  (Run Once for All Items)\n//\n// Compares the request with the stored ticket. Nothing has been sent at this\n// point, so every refusal here is a certain \"not delivered\" (status \"failed\").\nconst p = $('Validate payload').first().json.p;\nconst t = $input.first().json ?? {};\n\nconst errText = (t.error === undefined ? '' : typeof t.error === 'string' ? t.error : JSON.stringify(t.error)).toLowerCase();\nconst fail = (code, error) => [{ json: { ok: false, code, body: { status: 'failed', error } } }];\n\nif (t.error !== undefined) {\n  return /not[ _-]?found|\\b404\\b/.test(errText)\n    ? fail(404, 'Ticket not found')\n    : fail(502, 'The ticket could not be read, so nothing was sent');\n}\nif (!t._id && !t.customerEmail && !t.reviewStatus) return fail(404, 'Ticket not found');\n\nconst norm = (s) => String(s ?? '').replace(/\\r\\n?/g, '\\n').trim();\nconst same = (a, b) => String(a ?? '').trim().toLowerCase() === String(b ?? '').trim().toLowerCase();\n\nif (!same(t.customerEmail, p.customerEmail)) return fail(409, 'The recipient does not match the ticket');\n\nif (p.messageType === 'initial_response') {\n  if (String(t.reviewStatus ?? '').trim().toLowerCase() !== 'approved') return fail(409, 'The response is not approved');\n  if (norm(t.finalResponse) !== p.messageBody) return fail(409, 'The text does not match the approved response');\n}\nreturn [{ json: { ok: true } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -300,
+        -120
+      ],
+      "id": "c2000000-0000-4000-8000-000000000006",
+      "name": "Check ticket"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c2000000-0000-4000-8000-000000000007",
+              "leftValue": "={{ $json.ok === true ? \"yes\" : \"no\" }}",
+              "rightValue": "yes",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -80,
+        -120
+      ],
+      "id": "c2000000-0000-4000-8000-000000000008",
+      "name": "Ticket ok"
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "get",
+        "projectId": "ai-support-desk-9c4ed",
+        "collection": "n8n_send_log",
+        "documentId": "={{ $('Validate payload').first().json.p.key + '__sent' }}"
+      },
+      "type": "n8n-nodes-base.googleFirebaseCloudFirestore",
+      "typeVersion": 1.1,
+      "position": [
+        140,
+        -240
+      ],
+      "id": "c2000000-0000-4000-8000-000000000009",
+      "name": "Get sent record",
+      "credentials": {
+        "googleApi": {
+          "name": "Google Service Account account"
+        }
+      },
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "get",
+        "projectId": "ai-support-desk-9c4ed",
+        "collection": "n8n_send_log",
+        "documentId": "={{ $('Validate payload').first().json.p.key }}"
+      },
+      "type": "n8n-nodes-base.googleFirebaseCloudFirestore",
+      "typeVersion": 1.1,
+      "position": [
+        360,
+        -240
+      ],
+      "id": "c2000000-0000-4000-8000-000000000010",
+      "name": "Get claim record",
+      "credentials": {
+        "googleApi": {
+          "name": "Google Service Account account"
+        }
+      },
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code node \"Decide duplicate\"  (Run Once for All Items)\n//\n// Looks at the two n8n-owned log documents for this idempotency key:\n//   n8n_send_log/{key}__sent  exists -> Gmail already sent it: answer \"sent\", send nothing.\n//   n8n_send_log/{key}        exists -> an earlier run started and may or may not have sent it:\n//                                       answer \"unknown\", send nothing.\n//   neither                          -> this run may claim the send.\n// A read that fails for any reason other than \"not found\" is also \"unknown\": we cannot\n// rule out an earlier send, so we must not send.\nconst p = $('Validate payload').first().json.p;\nconst sentRec = $('Get sent record').first().json ?? {};\nconst claimRec = $('Get claim record').first().json ?? {};\n\nconst errText = (j) => (j.error === undefined ? '' : typeof j.error === 'string' ? j.error : JSON.stringify(j.error)).toLowerCase();\nconst isNotFound = (j) => j.error !== undefined && /not[ _-]?found|\\b404\\b/.test(errText(j));\nconst exists = (j) => j.error === undefined && Object.keys(j).length > 0;\nconst unknown = (error) => [{ json: { ok: false, code: 200, body: { status: 'unknown', error } } }];\n\nif (exists(sentRec)) {\n  return [\n    {\n      json: {\n        ok: false,\n        code: 200,\n        body: {\n          status: 'sent',\n          sentAt: typeof sentRec.sentAt === 'string' ? sentRec.sentAt : null,\n          messageId: typeof sentRec.gmailId === 'string' ? sentRec.gmailId : null,\n          deduplicated: true,\n        },\n      },\n    },\n  ];\n}\nif (sentRec.error !== undefined && !isNotFound(sentRec)) return unknown('The send log could not be read');\nif (exists(claimRec)) return unknown('An earlier attempt did not finish');\nif (claimRec.error !== undefined && !isNotFound(claimRec)) return unknown('The send log could not be read');\n\n// Fields the \"Create claim\" node stores.\nreturn [{ json: { ok: true, status: 'sending', startedAt: new Date().toISOString(), ticketId: p.ticketId, messageType: p.messageType, attempt: p.attempt } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        580,
+        -240
+      ],
+      "id": "c2000000-0000-4000-8000-000000000011",
+      "name": "Decide duplicate"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c2000000-0000-4000-8000-000000000012",
+              "leftValue": "={{ $json.ok === true ? \"yes\" : \"no\" }}",
+              "rightValue": "yes",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        800,
+        -240
+      ],
+      "id": "c2000000-0000-4000-8000-000000000013",
+      "name": "Can send"
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "create",
+        "projectId": "ai-support-desk-9c4ed",
+        "collection": "n8n_send_log",
+        "documentId": "={{ $('Validate payload').first().json.p.key }}",
+        "columns": "status,startedAt,ticketId,messageType,attempt"
+      },
+      "type": "n8n-nodes-base.googleFirebaseCloudFirestore",
+      "typeVersion": 1.1,
+      "position": [
+        1020,
+        -360
+      ],
+      "id": "c2000000-0000-4000-8000-000000000014",
+      "name": "Create claim",
+      "credentials": {
+        "googleApi": {
+          "name": "Google Service Account account"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code node \"Claim failed\"  (Run Once for All Items)\n// The send log refused the claim (the document already exists, or Firestore failed).\n// Either way nothing was sent by THIS run, but an earlier run may have, so answer \"unknown\".\nreturn [{ json: { code: 200, body: { status: 'unknown', error: 'The send could not be claimed' } } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1240,
+        -120
+      ],
+      "id": "c2000000-0000-4000-8000-000000000015",
+      "name": "Claim failed"
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $('Validate payload').first().json.p.customerEmail }}",
+        "subject": "={{ $('Validate payload').first().json.p.subject }}",
+        "emailType": "text",
+        "message": "={{ $('Validate payload').first().json.p.messageBody }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        1240,
+        -480
+      ],
+      "id": "c2000000-0000-4000-8000-000000000016",
+      "name": "Send email",
+      "credentials": {
+        "gmailOAuth2": {
+          "name": "Gmail account"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code node \"Prepare sent record\"  (Run Once for All Items)\n// Gmail has accepted the message. Builds the log document that makes every later\n// repeat of this idempotency key answer \"sent\" without emailing again.\nconst p = $('Validate payload').first().json.p;\nconst gmail = $input.first().json ?? {};\nreturn [\n  {\n    json: {\n      status: 'sent',\n      sentAt: new Date().toISOString(),\n      gmailId: typeof gmail.id === 'string' ? gmail.id : null,\n      ticketId: p.ticketId,\n      messageType: p.messageType,\n    },\n  },\n];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1460,
+        -560
+      ],
+      "id": "c2000000-0000-4000-8000-000000000017",
+      "name": "Prepare sent record"
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "create",
+        "projectId": "ai-support-desk-9c4ed",
+        "collection": "n8n_send_log",
+        "documentId": "={{ $('Validate payload').first().json.p.key + '__sent' }}",
+        "columns": "status,sentAt,gmailId,ticketId,messageType"
+      },
+      "type": "n8n-nodes-base.googleFirebaseCloudFirestore",
+      "typeVersion": 1.1,
+      "position": [
+        1680,
+        -560
+      ],
+      "id": "c2000000-0000-4000-8000-000000000018",
+      "name": "Record sent",
+      "credentials": {
+        "googleApi": {
+          "name": "Google Service Account account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code node \"Build sent response\"  (Run Once for All Items)\n// Answer for a message Gmail accepted. Reached even if writing the log failed,\n// because the email WAS sent and the dashboard must record that.\nconst rec = $('Prepare sent record').first().json;\nreturn [{ json: { code: 200, body: { status: 'sent', sentAt: rec.sentAt, messageId: rec.gmailId } } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1900,
+        -560
+      ],
+      "id": "c2000000-0000-4000-8000-000000000019",
+      "name": "Build sent response"
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code node \"Classify Gmail error\"  (Run Once for All Items)\n//\n// Gmail's error output does NOT always prove nothing was sent (a timeout can follow a\n// successful send). Only an immediate, explicit rejection is \"failed\": a bad request\n// (400), or an authentication/permission problem (401/403), or an address Gmail refuses.\n// Everything else is \"unknown\", and the claim is kept so a repeat can't email twice.\nconst j = $input.first().json ?? {};\nconst e = j.error ?? j;\nconst text = (typeof e === 'string' ? e : JSON.stringify(e ?? {})).toLowerCase();\nconst httpCode = Number(e && (e.httpCode ?? e.statusCode ?? e.code));\n\nconst clearRejection =\n  [400, 401, 403].includes(httpCode) ||\n  /invalid (to|recipient)|recipient address required|invalid_grant|unauthorized|forbidden|invalid credentials|insufficient permission|the (credentials|access token) .*(invalid|expired|revoked)/.test(text);\n\nreturn [\n  {\n    json: clearRejection\n      ? { releaseClaim: true, code: 502, body: { status: 'failed', error: 'Gmail could not send the email' } }\n      : { releaseClaim: false, code: 200, body: { status: 'unknown', error: 'The email may or may not have been sent' } },\n  },\n];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1460,
+        -360
+      ],
+      "id": "c2000000-0000-4000-8000-000000000020",
+      "name": "Classify Gmail error"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c2000000-0000-4000-8000-000000000021",
+              "leftValue": "={{ $json.releaseClaim === true ? \"yes\" : \"no\" }}",
+              "rightValue": "yes",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1680,
+        -360
+      ],
+      "id": "c2000000-0000-4000-8000-000000000022",
+      "name": "Release claim"
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "delete",
+        "projectId": "ai-support-desk-9c4ed",
+        "collection": "n8n_send_log",
+        "documentId": "={{ $('Validate payload').first().json.p.key }}"
+      },
+      "type": "n8n-nodes-base.googleFirebaseCloudFirestore",
+      "typeVersion": 1.1,
+      "position": [
+        1900,
+        -420
+      ],
+      "id": "c2000000-0000-4000-8000-000000000023",
+      "name": "Delete claim",
+      "credentials": {
+        "googleApi": {
+          "name": "Google Service Account account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code node \"Restore failed response\"  (Run Once for All Items)\n// The Firestore \"delete\" node replaces the item, so re-read the answer decided earlier.\nreturn [{ json: $('Classify Gmail error').first().json }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2120,
+        -420
+      ],
+      "id": "c2000000-0000-4000-8000-000000000024",
+      "name": "Restore failed response"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.body }}",
+        "options": {
+          "responseCode": "={{ $json.code }}"
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        2360,
+        0
+      ],
+      "id": "c2000000-0000-4000-8000-000000000025",
+      "name": "Respond"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Validate payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate payload": {
+      "main": [
+        [
+          {
+            "node": "Payload valid",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Payload valid": {
+      "main": [
+        [
+          {
+            "node": "Get ticket",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get ticket": {
+      "main": [
+        [
+          {
+            "node": "Check ticket",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check ticket": {
+      "main": [
+        [
+          {
+            "node": "Ticket ok",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ticket ok": {
+      "main": [
+        [
+          {
+            "node": "Get sent record",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get sent record": {
+      "main": [
+        [
+          {
+            "node": "Get claim record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get claim record": {
+      "main": [
+        [
+          {
+            "node": "Decide duplicate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Decide duplicate": {
+      "main": [
+        [
+          {
+            "node": "Can send",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Can send": {
+      "main": [
+        [
+          {
+            "node": "Create claim",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create claim": {
+      "main": [
+        [
+          {
+            "node": "Send email",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Claim failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claim failed": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send email": {
+      "main": [
+        [
+          {
+            "node": "Prepare sent record",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Classify Gmail error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare sent record": {
+      "main": [
+        [
+          {
+            "node": "Record sent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record sent": {
+      "main": [
+        [
+          {
+            "node": "Build sent response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build sent response": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify Gmail error": {
+      "main": [
+        [
+          {
+            "node": "Release claim",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Release claim": {
+      "main": [
+        [
+          {
+            "node": "Delete claim",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Delete claim": {
+      "main": [
+        [
+          {
+            "node": "Restore failed response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Restore failed response": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": []
+}
