@@ -15,7 +15,7 @@ export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
   const config = readAuthConfig();
   const session = config
-    ? await verifySessionToken(request.cookies.get(SESSION_COOKIE)?.value, config.sessionSecret)
+    ? await verifySessionToken(request.cookies.get(SESSION_COOKIE)?.value, config.signingKey)
     : null;
   const signedIn = Boolean(session && session.sub === config?.username);
 

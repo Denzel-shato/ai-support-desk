@@ -10,6 +10,12 @@ export interface AuthConfig {
   username: string;
   passwordHash: string;
   sessionSecret: string;
+  /**
+   * What session tokens are actually signed with: the secret combined with the
+   * password hash. Changing the password therefore signs every existing
+   * session out, which is the only revocation this single-account setup has.
+   */
+  signingKey: string;
 }
 
 /** Names (never values) of settings that are missing or unusable. */
@@ -32,9 +38,12 @@ export function readAuthConfig(
   env: Record<string, string | undefined> = process.env,
 ): AuthConfig | null {
   if (missingAuthSettings(env).length) return null;
+  const passwordHash = env[AUTH_ENV.passwordHash]!.trim();
+  const sessionSecret = env[AUTH_ENV.sessionSecret]!.trim();
   return {
     username: env[AUTH_ENV.username]!.trim(),
-    passwordHash: env[AUTH_ENV.passwordHash]!.trim(),
-    sessionSecret: env[AUTH_ENV.sessionSecret]!.trim(),
+    passwordHash,
+    sessionSecret,
+    signingKey: `${sessionSecret}\n${passwordHash}`,
   };
 }

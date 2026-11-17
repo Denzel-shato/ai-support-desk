@@ -38,7 +38,7 @@ export async function requireAuth(
     );
   }
   const token = readCookie(request.headers.get("cookie"), SESSION_COOKIE);
-  const session = await verifySessionToken(token, config.sessionSecret, nowMs);
+  const session = await verifySessionToken(token, config.signingKey, nowMs);
   if (!session || session.sub !== config.username) {
     throw new AuthError(401, "unauthenticated", "Sign in to continue.");
   }

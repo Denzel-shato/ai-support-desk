@@ -17,9 +17,16 @@ const GENERIC_FAILURE = "That username or password is not correct.";
 const DUMMY_HASH =
   "scrypt:16384:8:1:AAAAAAAAAAAAAAAAAAAAAA==:" + "A".repeat(86) + "==";
 
+/**
+ * The client address as the nearest proxy saw it. The LAST x-forwarded-for
+ * entry is the one our own proxy appended; earlier entries are whatever the
+ * client chose to send, so they must not decide the rate-limit key. Capped in
+ * length because the value ends up in a Map key and a log line.
+ */
 function clientKey(request: Request): string {
-  const forwarded = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
-  return forwarded || request.headers.get("x-real-ip") || "unknown";
+  const parts = request.headers.get("x-forwarded-for")?.split(",") ?? [];
+  const last = parts[parts.length - 1]?.trim();
+  return (last || request.headers.get("x-real-ip") || "unknown").replace(/[^\w.:-]/g, "?").slice(0, 64);
 }
 
 /**
@@ -44,7 +51,7 @@ export async function POST(request: Request) {
     }
 
     const key = clientKey(request);
-    const wait = loginLimiter.retryAfterSeconds(key, Date.now());
+    const wait = loginLimiter.reserve(key, Date.now());
     if (wait > 0) {
       const res = errorResponse(
         429,
@@ -64,13 +71,12 @@ export async function POST(request: Request) {
     const userOk = username === config.username;
     const passOk = await verifyPassword(password, userOk ? config.passwordHash : DUMMY_HASH);
     if (!userOk || !passOk) {
-      loginLimiter.recordFailure(key, Date.now());
       console.warn(`[api/auth/login] failed sign-in attempt from ${key}`);
       return errorResponse(401, "invalid_credentials", GENERIC_FAILURE);
     }
 
     loginLimiter.recordSuccess(key);
-    const token = await createSessionToken(config.username, config.sessionSecret);
+    const token = await createSessionToken(config.username, config.signingKey);
     const res = NextResponse.json(
       { user: { username: config.username } },
       { status: 200, headers: NO_STORE },
