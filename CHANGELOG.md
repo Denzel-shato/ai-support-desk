@@ -1,5 +1,41 @@
 # Changelog
 
+## Audit remediation, phase 1
+
+Security, data integrity and delivery-safety fixes from the architecture audit. No Firestore schema change for tickets or articles. Added fields are listed below. One new dependency-free auth layer, one test suite (`npm test`).
+
+### Security
+- **Authentication (new, enforced server-side).** Single shared account; signed httpOnly cookie (HMAC-SHA256, 8 h), scrypt password hash, rate-limited login. `requireAuth()` runs first in **every** API route, so a protected page is not the only barrier; `src/proxy.ts` additionally redirects signed-out page visits to `/login`. **Fails closed**: with the three `AUTH_*` settings missing, every API answers 503 and every page redirects. Generate the values with `npm run auth:hash`.
+- Ticket API output is now an **allowlist** (internal fields such as the send idempotency key are no longer returned).
+- The send webhook secret is **required in production**.
+- Cross-site request guard now also checks `Sec-Fetch-Site`.
+- Removed the mock user ("Amara Okafor") and the fake "3 unread" notification badge; added Sign out.
+
+### Response lifecycle and delivery safety
+- `responseStatus` is now `draft | queued | sending | sent | failed | unknown`; `reviewStatus` is unchanged and separate.
+- A timeout, dropped connection, 5xx or 408 is recorded as **`unknown`, never `failed`**. `failed` means known not delivered (n8n said so, a 4xx, or no connection was made).
+- A claim that never recorded an answer reads as `unknown` after 2 minutes (it used to be silently re-sendable, which could duplicate an email).
+- `unknown` / `queued` sends are **not retried automatically and not resendable by a plain click**. An agent can mark it delivered, mark it not delivered, or explicitly "Send again anyway" (warned about a duplicate). New routes: `POST /api/tickets/[id]/reconcile`, `POST /api/tickets/[id]/followups/[messageId]/reconcile`.
+- The idempotency key is stable per message and also sent as an `Idempotency-Key` header; `attempt` is included. **Exactly-once delivery is not claimed**: de-duplicating a repeat requires the n8n step documented in `docs/n8n-send-response-workflow.md`.
+- Overview "Awaiting review" and the table status no longer count Low/Medium tickets carrying a legacy `awaiting_review`.
+- Added ticket fields (written only by the dashboard): `responseAttempts`, `responseConfirmedBy`; message field `attempts`, `confirmedBy`. Existing documents work unchanged.
+
+### Knowledge Base
+- A full edit that omits `active` no longer silently reactivates an inactive article.
+- Creating an article is idempotent per form submission (the request ID is the document ID); a duplicate title in the same category is refused (409).
+- Edits carry a version token; a stale edit is refused (409) instead of overwriting a concurrent change.
+
+### Errors and visibility
+- 5xx responses carry a short `requestId` that matches the server log; stacks never reach the client.
+- When the 1,000-ticket / 200-article safety cap cuts results off, the UI says so (it used to be silent).
+- Fixed a crash in the follow-up panel when `customerEmail` was not a string.
+
+### n8n (proposed, NOT imported or run)
+`n8n/ai-support-desk-automation.json` is a **proposed** corrected intake workflow, generated from the exported one. See `docs/n8n-intake-workflow.md`. The live workflow has not been changed.
+
+### Tests
+`npm test` (Node's built-in runner, no new dependency): lifecycle, Knowledge Base, auth, every API route unauthenticated, workflow Code nodes and wiring, regression.
+
 ## Settings page
 
 Replaces the Settings placeholder with a read-only, honest status page. No schema change, no new dependency, no new environment variable, no new collection, no n8n change, no authentication.
