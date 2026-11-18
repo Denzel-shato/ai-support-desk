@@ -48,6 +48,8 @@ return [
         customerResponse: esc(t.customerResponse),
         stepsHtml,
         unsupportedHtml: unsupported.length ? unsupported.map(esc).join('<br>') : 'None identified.',
+        // Plain text for the subject line. Priority is only ever a validated value; "Unknown" when missing.
+        subjectPriority: /^(Low|Medium|High|Urgent)$/.test(String(t.priority ?? '')) ? t.priority : 'Unknown',
         // Plain text for the subject line: no control characters or line breaks.
         subjectName: String(t.customerName ?? '').replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, 80),
       },
