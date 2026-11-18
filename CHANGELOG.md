@@ -1,5 +1,15 @@
 # Changelog
 
+## Intake reliability (phases A-E)
+
+- **Gemini retries** (3 tries) on both nodes; the manual-handling fallback is unchanged.
+- **Deterministic ticket ID** (`tk_` + SHA-256 of email + message + clock hour) as the Firestore document ID, plus new additive ticket field `intakeExecutionId`. A double submit or retried write can no longer create two tickets; duplicates stop quietly.
+- **Create failure handling:** retry, then conflict recovery (own earlier write continues to the emails; someone else's write is a duplicate; unreadable is reported) or a staff **rescue email** with the escaped submission. A Firestore outage no longer loses the customer's text.
+- **Notification emails** retry and fall back to the rescue email; n8n attribution removed from emails; escalation subject no longer blank when priority is missing.
+- Form confirmation text no longer claims the request was "recorded". **The early-confirmation problem is NOT solved**: n8n can't respond truthfully early with Form Trigger v2.6 without browser-dependent processing. Alternatives are documented in `docs/n8n-intake-workflow.md`.
+- Tests: `tests/intake-reliability.test.ts`; the graph assertion in `tests/workflow.test.ts` now lists the new branch points.
+- Proposed workflow only. Verified in Node and in a stubbed local n8n, **not** against live Gemini, Firestore, Gmail or your n8n.
+
 ## Send-response workflow audit fixes
 
 - Only an empty Firestore item counts as a missing document; any error item (even one saying "not found") is now a read failure (`502` for the ticket, `unknown` for the send log), so a genuine error can no longer be mistaken for "not sent yet".

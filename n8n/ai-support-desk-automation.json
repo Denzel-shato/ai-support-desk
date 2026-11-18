@@ -242,7 +242,11 @@
         "googleApi": {
           "name": "Google Service Account account"
         }
-      }
+      },
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
     },
     {
       "parameters": {
@@ -312,7 +316,11 @@
         "gmailOAuth2": {
           "name": "Gmail account"
         }
-      }
+      },
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
     },
     {
       "parameters": {
@@ -335,7 +343,213 @@
         "gmailOAuth2": {
           "name": "Gmail account"
         }
-      }
+      },
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code node \"Classify create error\"  (mode: Run Once for All Items)\n//\n// Reached only from the ERROR output of \"Create a document\", after n8n's own retries.\n// Nothing has been emailed yet. Decides whether Firestore refused the write because the\n// document already exists (the deterministic ticket ID was used before) or failed for any\n// other reason (outage, permissions, bad credential ...).\nconst j = $input.first().json ?? {};\nconst e = j.error ?? j;\nconst message = typeof e === 'string' ? e : String(e?.message ?? e?.description ?? JSON.stringify(e ?? {}));\nconst text = `${message} ${typeof e === 'object' ? JSON.stringify(e ?? {}) : ''}`;\nconst httpCode = Number(e && typeof e === 'object' ? (e.httpCode ?? e.statusCode ?? e.code) : NaN);\nconst conflict = httpCode === 409 || /already[ _-]?exists/i.test(text);\nreturn [{ json: { kind: conflict ? 'conflict' : 'failure', error: message.replace(/\\s+/g, ' ').slice(0, 300) } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1440,
+        420
+      ],
+      "id": "a1000000-0000-4000-8000-000000000010",
+      "name": "Classify create error"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 4
+          },
+          "conditions": [
+            {
+              "id": "b1000000-0000-4000-8000-000000000011",
+              "leftValue": "={{ $json.kind }}",
+              "rightValue": "conflict",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.4,
+      "position": [
+        1660,
+        420
+      ],
+      "id": "a1000000-0000-4000-8000-000000000011",
+      "name": "Is write conflict"
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "get",
+        "projectId": "ai-support-desk-9c4ed",
+        "collection": "support_tickets",
+        "documentId": "={{ $('Build ticket').first().json.ticketId }}"
+      },
+      "type": "n8n-nodes-base.googleFirebaseCloudFirestore",
+      "typeVersion": 1.1,
+      "position": [
+        1880,
+        320
+      ],
+      "id": "a1000000-0000-4000-8000-000000000012",
+      "name": "Get existing ticket",
+      "credentials": {
+        "googleApi": {
+          "name": "Google Service Account account"
+        }
+      },
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code node \"Check existing ticket\"  (mode: Run Once for All Items)\n//\n// The Create node refused because support_tickets/<ticketId> already exists. Two very different\n// situations look identical to Firestore:\n//   ours      the document was written by THIS run (an earlier attempt succeeded but its reply was\n//             lost, so n8n retried). The ticket is safe; carry on to the emails.\n//   duplicate the document belongs to another run: the same submission arrived twice. The first run\n//             owns the emails, so this one stops without creating or sending anything.\n//   unclear   the existing document could not be read: we cannot tell, so staff are told.\n// A missing document arrives as an empty item (\"Always Output Data\"); an error item is a read failure.\nconst mine = $('Build ticket').first().json;\nconst existing = $input.first().json ?? {};\n\nif (existing.error !== undefined || Object.keys(existing).length === 0) {\n  return [{ json: { route: 'unclear', error: 'The existing ticket could not be read' } }];\n}\nconst mineId = mine.intakeExecutionId === undefined ? '' : String(mine.intakeExecutionId);\nif (mineId && String(existing.intakeExecutionId ?? '') === mineId) {\n  return [{ json: { ...mine, route: 'ours' } }];\n}\nreturn [{ json: { route: 'duplicate' } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2100,
+        320
+      ],
+      "id": "a1000000-0000-4000-8000-000000000013",
+      "name": "Check existing ticket"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 4
+          },
+          "conditions": [
+            {
+              "id": "b1000000-0000-4000-8000-000000000014",
+              "leftValue": "={{ $json.route }}",
+              "rightValue": "ours",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.4,
+      "position": [
+        2320,
+        320
+      ],
+      "id": "a1000000-0000-4000-8000-000000000014",
+      "name": "Is our own earlier attempt"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 4
+          },
+          "conditions": [
+            {
+              "id": "b1000000-0000-4000-8000-000000000015",
+              "leftValue": "={{ $json.route }}",
+              "rightValue": "duplicate",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.4,
+      "position": [
+        2540,
+        460
+      ],
+      "id": "a1000000-0000-4000-8000-000000000015",
+      "name": "Is duplicate submission"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        2760,
+        380
+      ],
+      "id": "a1000000-0000-4000-8000-000000000016",
+      "name": "Duplicate submission (stop)"
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code node \"Prepare rescue email\"  (mode: Run Once for All Items)\n//\n// One staff email for every situation where the automation could not finish normally and the\n// customer's submission must not be lost. All values are HTML-escaped here; Gmail only prints\n// `html`. The submission always comes from 'Build ticket' (validated, trimmed) and the failure\n// text is shortened, so no stack trace or credential detail is forwarded.\n//\n// kind (decided from where the item came from):\n//   ticket_not_saved        Firestore failed; no ticket exists; no email was sent to anyone\n//   ticket_unclear          the ticket ID already existed but could not be confirmed\n//   acknowledgement_failed  ticket saved; the customer's acknowledgement email failed\n//   escalation_failed       ticket saved; the staff escalation email failed\nconst esc = (v) =>\n  String(v ?? '')\n    .replace(/&/g, '&amp;')\n    .replace(/</g, '&lt;')\n    .replace(/>/g, '&gt;')\n    .replace(/\"/g, '&quot;')\n    .replace(/'/g, '&#39;');\nconst ran = (name) => {\n  try {\n    return $(name).isExecuted === true;\n  } catch {\n    return false;\n  }\n};\n\nlet t = {};\ntry {\n  t = $('Build ticket').first().json ?? {};\n} catch {\n  /* nothing to show */\n}\nconst input = $input.first().json ?? {};\n\nlet kind;\nif (input.route === 'unclear') kind = 'ticket_unclear';\nelse if (input.kind === 'failure') kind = 'ticket_not_saved';\nelse if (ran('Send a message1')) kind = 'acknowledgement_failed';\nelse if (ran('Send a message')) kind = 'escalation_failed';\nelse kind = 'ticket_not_saved';\n\nconst TEXT = {\n  ticket_not_saved: {\n    label: 'Ticket NOT saved',\n    what: 'The ticket could not be saved to Firestore, so it will not appear in the dashboard. No email was sent to the customer or to staff. The customer was shown a \"submitted\" message.',\n    todo: 'Please handle this request manually and contact the customer.',\n  },\n  ticket_unclear: {\n    label: 'Ticket status unclear',\n    what: 'A ticket with this ID already exists but could not be confirmed as part of this submission. No email was sent.',\n    todo: 'Check the dashboard for this customer. If there is no ticket, handle this request manually.',\n  },\n  acknowledgement_failed: {\n    label: 'Customer acknowledgement failed',\n    what: 'The ticket was saved, but the acknowledgement email to the customer could not be sent.',\n    todo: 'The ticket is in the dashboard. Consider replying to the customer yourself.',\n  },\n  escalation_failed: {\n    label: 'Escalation email failed',\n    what: 'The ticket was saved, but the escalation email to the staff inbox could not be sent (this message is the fallback).',\n    todo: 'The ticket is in the dashboard. Please review it now.',\n  },\n}[kind];\n\nconst clean = (v) => String(v ?? '').replace(/[\\u0000-\\u001f\\u007f]+/g, ' ').trim();\nconst failure = clean(\n  typeof input.error === 'string' ? input.error : (input.error?.message ?? input.error?.description ?? ''),\n).slice(0, 300);\nlet executionId = '';\ntry {\n  executionId = String($execution.id ?? '');\n} catch {\n  /* not available */\n}\n\nconst row = (label, value, pre) =>\n  `<tr><td style=\"padding:6px 16px 6px 0; vertical-align:top; color:#6b625a;\">${esc(label)}</td>` +\n  `<td style=\"padding:6px 0; ${pre ? 'white-space:pre-line;' : ''}\">${esc(value)}</td></tr>`;\n\nconst html =\n  `<div style=\"font-family:Arial, Helvetica, sans-serif; color:#1f1a17; max-width:640px;\">` +\n  `<h2 style=\"margin:0 0 12px; color:#991b1b;\">${esc(TEXT.label)}</h2>` +\n  `<p style=\"margin:0 0 8px;\">${esc(TEXT.what)}</p>` +\n  `<p style=\"margin:0 0 16px;\"><strong>${esc(TEXT.todo)}</strong></p>` +\n  `<table style=\"border-collapse:collapse; font-size:14px;\">` +\n  row('Customer', clean(t.customerName)) +\n  row('Email', clean(t.customerEmail)) +\n  row('Message', String(t.message ?? ''), true) +\n  row('Ticket ID', clean(t.ticketId)) +\n  row('Priority', clean(t.priority) || 'Unknown') +\n  (failure ? row('Error', failure) : '') +\n  (executionId ? row('n8n execution', executionId) : '') +\n  `</table>` +\n  `<p style=\"margin-top:20px; font-size:11px; color:#9a9086;\">Generated automatically by the AI Support Desk</p></div>`;\n\nconst subject = `⚠️ ${TEXT.label} — ${clean(t.customerName).slice(0, 80)}`;\nreturn [{ json: { kind, subject, html } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2760,
+        600
+      ],
+      "id": "a1000000-0000-4000-8000-000000000017",
+      "name": "Prepare rescue email"
+    },
+    {
+      "parameters": {
+        "sendTo": "REPLACE_WITH_ESCALATION_INBOX@example.com",
+        "subject": "={{ $json.subject }}",
+        "message": "={{ $json.html }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        2980,
+        600
+      ],
+      "id": "a1000000-0000-4000-8000-000000000018",
+      "name": "Send rescue email",
+      "credentials": {
+        "gmailOAuth2": {
+          "name": "Gmail account"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
     }
   ],
   "pinData": {},
@@ -443,6 +657,13 @@
             "type": "main",
             "index": 0
           }
+        ],
+        [
+          {
+            "node": "Classify create error",
+            "type": "main",
+            "index": 0
+          }
         ]
       ]
     },
@@ -469,6 +690,128 @@
         [
           {
             "node": "Send a message1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify create error": {
+      "main": [
+        [
+          {
+            "node": "Is write conflict",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is write conflict": {
+      "main": [
+        [
+          {
+            "node": "Get existing ticket",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare rescue email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get existing ticket": {
+      "main": [
+        [
+          {
+            "node": "Check existing ticket",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check existing ticket": {
+      "main": [
+        [
+          {
+            "node": "Is our own earlier attempt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is our own earlier attempt": {
+      "main": [
+        [
+          {
+            "node": "Prepare email fields",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Is duplicate submission",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is duplicate submission": {
+      "main": [
+        [
+          {
+            "node": "Duplicate submission (stop)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare rescue email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare rescue email": {
+      "main": [
+        [
+          {
+            "node": "Send rescue email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send a message": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Prepare rescue email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send a message1": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Prepare rescue email",
             "type": "main",
             "index": 0
           }

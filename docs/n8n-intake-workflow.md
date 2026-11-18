@@ -99,6 +99,76 @@ visitor experience and wasn't verified, so it is left out. The browser-side `req
    is a new public page, so do it only if option 1 isn't enough.
 3. **Cap spend:** set a budget/quota on the Gemini API key so abuse can't run up cost.
 
+## Reliability layer (retries, duplicates, rescue emails)
+
+All of this is in `n8n/ai-support-desk-automation.json`. The Gemini prompts, classification, KB evaluation, routing, dashboard and the
+Send Response workflow are unchanged. High/Urgent tickets still go to staff only, with no automatic customer acknowledgement.
+
+| Area | Behaviour |
+|---|---|
+| Gemini | Both nodes retry 3 times (3 s apart). If it still fails, the existing manual-handling ticket (`intakeIssue`) is created and escalated. |
+| Ticket ID | `Build ticket` computes `tk_<32 hex>` = SHA-256 of lower-cased email + whitespace-normalised message + clock hour (pure JS: the Code node allows no `crypto` by default). Same submission in the same hour = same ID. Used as the Firestore document ID. Name is not part of the identity. |
+| `intakeExecutionId` | **New ticket field** (the n8n execution that built the ticket). Additive: the dashboard allowlist ignores it. Used only to tell "my own earlier write" from "someone else's". |
+| Create failure | `Create a document` retries 3 times (2 s apart), then its error output runs `Classify create error`. **Not a conflict:** `Prepare rescue email` -> `Send rescue email` (no customer email, no ticket). **Conflict (document exists):** `Get existing ticket` -> `Check existing ticket`: same `intakeExecutionId` = our own earlier write whose reply was lost, so continue to the normal emails; different = a duplicate submission, stop quietly (`Duplicate submission (stop)`, nothing sent); unreadable = rescue email "status unclear". |
+| Notification emails | The acknowledgement and escalation Gmail nodes retry twice (2 s apart). If they still fail, the error output sends a rescue email to staff (the ticket is already saved). A retry after a lost reply can send a duplicate notification; that was chosen over silently sending none. |
+| Rescue email | Escaped submission (name, email, message), ticket ID, priority, shortened error text (max 300 chars), n8n execution ID, and what to do. Subject says which failure happened. Goes to the **same inbox as escalations**. |
+| Attribution | n8n's "sent automatically with n8n" line is turned off on all three Gmail nodes. |
+
+**You must set the staff inbox in TWO places:** `Send a message` (escalation) and `Send rescue email`. Both ship with
+`REPLACE_WITH_ESCALATION_INBOX@example.com`; a test asserts they are equal in the JSON, so don't change just one.
+
+### Known limits of the duplicate protection
+- The window is a clock hour: a repeat that straddles the hour boundary can create a second ticket. A genuinely new message always gets a new ID.
+- An identical message from the same address in the same hour is treated as a duplicate and dropped silently (a stop node, no email, no ticket).
+- A duplicate is only recognised if the first run's write succeeded. If the first run died before writing, the second run creates the ticket (correct).
+
+### Immediate acknowledgement: **NOT solved, and n8n can't solve it cleanly here**
+With the Form Trigger's default "respond when the form is submitted", the visitor sees the confirmation **before** the ticket is saved, so
+a Firestore outage still shows them "submitted". Retries and the rescue email reduce the chance and make sure staff see the request, but they
+do not make the confirmation truthful. What I found in the n8n 2.47.7 source (read, not run):
+- A "Respond to Webhook" node is **rejected** in workflows started by Form Trigger v2.2+ (error: not supported; use a Form node).
+- The only supported early response is an n8n **Form node, Page Type "Form Ending"**. It pauses the execution and relies on the visitor's browser
+  posting back to resume it, so Gemini, the ticket save and the emails would depend on the visitor keeping the page open. Not built.
+- What the form says now: "Your request has been submitted and is now being processed...", which no longer claims it was recorded.
+
+Safest practical alternatives (neither is implemented; pick one):
+1. **Truthful but slower:** on the Form Trigger set *Respond When* to **Workflow Finishes**. The visitor waits for both Gemini calls (with retries) and
+   a Firestore/Gmail failure surfaces as an error page instead of "submitted". Deterministic IDs make a resubmission after such an error safe.
+   Expect a wait of several seconds up to roughly a minute if Gemini is retrying (not measured).
+2. **Fast and truthful (bigger change):** split into a small front-door workflow (validate, save a minimal manual-handling ticket under the
+   deterministic ID, then answer) and a second workflow for Gemini/emails that updates the ticket. The Firestore node's `upsert` writes only the listed
+   columns (it uses a masked batch write), so it can fill in a saved ticket. Note that batch writes report per-write failures inside the response rather
+   than throwing, so a design like this must check each write's `status`.
+
+## What is verified and what is not (reliability layer)
+
+**Automated (Node, mocks), `tests/intake-reliability.test.ts` and `tests/workflow.test.ts`:** SHA-256 matches Node's `crypto`; ID stability and
+sensitivity; graph reachability (no email unless the ticket was written or proven to be this run's own); create-error classification; simulated
+failure paths built from the real Code-node sources (Firestore failure, simultaneous duplicates, lost reply, unreadable conflict, ack/escalation
+failure, High/Urgent routing, rescue-email escaping).
+
+**Stubbed local n8n 2.47.7 (not your instance; Gemini, Firestore and Gmail replaced by stub nodes, nothing activated, nothing sent):** the workflow imports;
+the Code nodes (including the SHA-256 and `$execution.id`) run in n8n's real Code sandbox; Create/Gmail failure branches, duplicate stop, own-write recovery,
+unclear conflict and notification-failure rescue took the expected paths (`isExecuted` works in the real sandbox); retries really repeat the node
+(Create failing 3 times -> rescue; failing twice then succeeding -> normal path; Gemini failing twice then succeeding -> normal ticket; Gemini always failing ->
+manual-handling ticket).
+
+**NOT verified (needs your n8n):** real Firestore error shapes (the conflict detection relies on "already exists" or HTTP 409 in the error; the real text is
+unconfirmed), real Gmail failures, real Gemini 429/503 behaviour, the Form Trigger response, whether retries multiply wait time as expected,
+and that `Create a document` with `onError: continueErrorOutput` exposes the error on output 2 in your version (it did in 2.47.7).
+
+### Manual test checklist (use a test Firestore project/collection and a mailbox you own)
+1. Import into a **non-production** n8n, attach credentials, set the staff inbox in both Gmail nodes (above). Do not activate until step 2 passes.
+2. Submit a valid Low-priority covered question: one ticket `tk_...`, one acknowledgement, no rescue email.
+3. Submit the identical form again within the hour: no second ticket, no emails; the execution ends at `Duplicate submission (stop)`.
+4. Submit the same text from a different address, and a different message from the same address: each creates its own ticket.
+5. Submit a High issue: one ticket, escalation email to staff, **no** customer email.
+6. Temporarily break the Firestore credential: expect the rescue email "Ticket NOT saved" with the full submission and no customer email. Restore it.
+7. Temporarily set the escalation inbox invalid / break Gmail: expect the ticket saved and a rescue email (or an execution error if the rescue also cannot send).
+8. Make Gemini fail (bad key): ticket with `intakeIssue`, escalated, plus the escalation email.
+9. Check a created ticket in Firestore: `intakeExecutionId` present, `escalatedAt` null for Low (written as null by the Create node), dashboard shows it normally.
+10. Confirm the dashboard approves and sends a reply for an intake-created High ticket through the Send Response workflow (this workflow does not touch that path).
+
 ## What is verified and what is not
 
 Verified by `npm test` (runs the Code-node sources in plain Node with a stand-in for n8n's `$`):

@@ -245,9 +245,20 @@ test("graph: single linear path, ONE Firestore create, no upsert, every connecti
     assert.ok(names.has(from));
     for (const branch of c.main) for (const to of branch) assert.ok(names.has(to.node), `${from} -> ${to.node}`);
   }
-  // Only the two Ifs fan out: the validity gate, and the escalation split into the two notification emails.
+  // Only these nodes fan out: the validity gate, the escalation split into the two notification emails,
+  // and the failure handling added for reliability (error outputs of Create/Gmail, duplicate/conflict decisions).
+  // The happy path itself stays linear; see tests/intake-reliability.test.ts for the failure branches.
   const fanOut = Object.entries<any>(wf.connections).filter(([, c]) => c.main.length > 1 || c.main[0].length > 1);
-  assert.deepEqual(fanOut.map(([n]) => n).sort(), ["If", "Is submission valid"]);
+  assert.deepEqual(fanOut.map(([n]) => n).sort(), [
+    "Create a document",
+    "If",
+    "Is duplicate submission",
+    "Is our own earlier attempt",
+    "Is submission valid",
+    "Is write conflict",
+    "Send a message",
+    "Send a message1",
+  ]);
   assert.deepEqual(wf.connections.If.main.map((b: any[]) => b[0].node), ["Send a message", "Send a message1"]);
   assert.equal(wf.active, false, "must not auto-activate on import");
 });
