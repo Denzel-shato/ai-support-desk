@@ -10,6 +10,7 @@
 //   ticket_unclear          the ticket ID already existed but could not be confirmed
 //   acknowledgement_failed  ticket saved; the customer's acknowledgement email failed
 //   escalation_failed       ticket saved; the staff escalation email failed
+//   rate_limit_unavailable  the spam-protection store failed (fail-closed): the submission was refused, no ticket
 const esc = (v) =>
   String(v ?? '')
     .replace(/&/g, '&amp;')
@@ -29,18 +30,30 @@ let t = {};
 try {
   t = $('Build ticket').first().json ?? {};
 } catch {
-  /* nothing to show */
+  // No ticket was built (the rate limiter refused the submission first): use the validated form values.
+  try {
+    const v = $('Validate submission').first().json ?? {};
+    t = { customerName: v['Your Name'], customerEmail: v['Your Email'], message: v['What is it you would like us to fix ?'] };
+  } catch {
+    /* nothing to show */
+  }
 }
 const input = $input.first().json ?? {};
 
 let kind;
-if (input.route === 'unclear') kind = 'ticket_unclear';
+if (input.route === 'unavailable') kind = 'rate_limit_unavailable';
+else if (input.route === 'unclear') kind = 'ticket_unclear';
 else if (input.kind === 'failure') kind = 'ticket_not_saved';
 else if (ran('Send a message1')) kind = 'acknowledgement_failed';
 else if (ran('Send a message')) kind = 'escalation_failed';
 else kind = 'ticket_not_saved';
 
 const TEXT = {
+  rate_limit_unavailable: {
+    label: 'Spam check unavailable: request held',
+    what: 'The rate limiter could not reach Firestore, so this submission was refused to avoid bypassing spam protection. No ticket was created and nothing was sent to the customer. The visitor was told to try again later.',
+    todo: 'If this looks like a genuine request, handle it manually. Then check Firestore access to the rate_limits collection.',
+  },
   ticket_not_saved: {
     label: 'Ticket NOT saved',
     what: 'The ticket could not be saved to Firestore, so it will not appear in the dashboard. No email was sent to the customer or to staff. The customer was shown a "submitted" message.',
@@ -87,8 +100,7 @@ const html =
   row('Customer', clean(t.customerName)) +
   row('Email', clean(t.customerEmail)) +
   row('Message', String(t.message ?? ''), true) +
-  row('Ticket ID', clean(t.ticketId)) +
-  row('Priority', clean(t.priority) || 'Unknown') +
+  (t.ticketId ? row('Ticket ID', clean(t.ticketId)) + row('Priority', clean(t.priority) || 'Unknown') : '') +
   (failure ? row('Error', failure) : '') +
   (executionId ? row('n8n execution', executionId) : '') +
   `</table>` +

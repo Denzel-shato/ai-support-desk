@@ -78,19 +78,13 @@ A rejected item carries only `{field, code}` errors, never the submitted text. V
 the original field labels, and every later node (prompts, `Build ticket`) reads them from `Validate submission`, not from
 the raw form. The three form fields are also marked required in the Form Trigger: that is browser-side only (UX), not security.
 
-**Limitation: the submitter is not told.** The Form Trigger answers with its completion page as soon as the form is
-posted, before the workflow runs, so a rejected visitor sees "submitted" and nothing is created or emailed. Telling them
-requires the Form Trigger's "respond when last node finishes" mode plus a Form ending page; that changes the normal
-visitor experience and wasn't verified, so it is left out. The browser-side `required`/email checks still stop honest mistakes.
+**Visitors are now told (rate-limit change, see "Rate limiting" below):** the Form Trigger is v2.1 with a Respond to Webhook node, so an
+invalid or rate-limited visitor gets a specific polite message instead of "submitted". The browser-side `required`/email checks still stop honest mistakes.
 
-**NOT protected (no rate limiting, no bot protection is implemented).**
-- The Form Trigger has no rate limit, CAPTCHA or honeypot setting, and cannot host a CAPTCHA widget. An in-memory
-  counter in a Code node would reset on restarts and doesn't span executions, so none was added.
-- A bot posting *valid-looking* submissions still creates tickets and Gemini calls, and (for Low/Medium covered issues)
-  sends an acknowledgement email to whatever address it typed. Validation only stops malformed input.
-- Execution data for rejected submissions is still stored by n8n like any other execution.
+**Still NOT protected: bot protection.** There is no CAPTCHA or honeypot, and a bot posting valid-looking submissions *within the limits* still creates
+tickets, Gemini calls and (Low/Medium) acknowledgement emails. Execution data for rejected submissions is stored by n8n like any other execution.
 
-**Smallest practical options, in order (none are done):**
+**Further options (none done):**
 1. **Rate-limit the form URL at the edge.** If n8n is self-hosted, put it behind Cloudflare (or your reverse proxy) with a
    rate-limiting rule on the form path, e.g. a handful of POSTs per IP per minute. No code and no new dependency. n8n Cloud
    gives no such control.
@@ -98,6 +92,72 @@ visitor experience and wasn't verified, so it is left out. The browser-side `req
    verify the Cloudflare Turnstile / reCAPTCHA token server-side in the first node, then run `Validate submission`. This
    is a new public page, so do it only if option 1 isn't enough.
 3. **Cap spend:** set a budget/quota on the Gemini API key so abuse can't run up cost.
+
+## Rate limiting
+
+### What the Form Trigger gives us (inspected in n8n 2.47.7)
+- Request **headers** are available only when the Form Trigger option `showHeaders` is on. There is **no socket/remote IP** in the payload.
+- Headers are client-controllable unless your own reverse proxy/CDN appends them. So the limiter trusts only the entry written by *your* proxy:
+  the Nth entry from the **right** of `X-Forwarded-For` (`ipSource.trustedProxyHops`, default 1). Left-hand entries are ignored, so a spoofed leading
+  value cannot dodge the limit. Fewer entries than hops, private/loopback/link-local/CGNAT or unparsable addresses mean "unknown source".
+  If n8n is exposed directly (no proxy that sets the header), **IP limiting is not reliable**; the unknown bucket and email/global limits are the fallback.
+- To be able to answer visitors, the Form Trigger is now **v2.1 with `responseMode: responseNode`** (v2.2+ rejects Respond to Webhook) and an explicit `path`.
+
+### Design
+`Form Trigger -> Rate limit settings -> Validate submission -> (valid) Prepare rate limit -> Plan claim -> Claim slot -> Evaluate claim -> ...`
+- **Slot claims in Firestore.** Per check and fixed window there are N slot documents `rl_<kind>_<hashedkey>_<windowId>_<slot>`. A submission creates the
+  first free slot with Firestore `create` (atomic, fails with 409 if the document exists). Winning `limit` slots = allowed. Two concurrent submissions
+  cannot both take the same slot, so the limit cannot be exceeded by racing (read-then-write counters can).
+- **Checks, in order:** global flood cap, IP (or shared "unknown" bucket), normalised email. Email is never the only check.
+- **Normalised email:** lower-case, `+tag` removed, Gmail/googlemail dots removed. Other domains keep dots.
+- **Outcomes:** granted -> `Respond to form (accepted)` (the unchanged "submitted and is now being processed" text) -> Gemini etc. exactly as before.
+  Limited -> polite "several requests, try again later" and the run **ends** (no Gemini, KB, ticket, escalation or customer email). Limiter unavailable -> see below.
+- **All numbers and messages live in `Rate limit settings`** (one node). Values are clamped (limit 1-20, window 10-86400 s).
+
+### Chosen initial limits (please tune)
+| Check | Limit | Window | Why |
+|---|---|---|---|
+| Global | 20 | 60 s | Flood/cost cap for the whole form; far above a small team's real traffic |
+| IP | 10 | 1 h | Allows a shared office/NAT several genuine requests |
+| Unknown source | 20 | 1 h | One shared bucket when no trusted IP; deliberately looser so honest users behind a missing header are not locked out |
+| Email | 3 | 1 h | A real customer rarely needs more; stops one address being used to mail-bomb or probe |
+These are judgement calls, not measured traffic.
+
+### Limiter failure decision: **fail closed** (`failMode: 'closed'`)
+If the claim store errors (after 2 immediate retries per slot) the visitor is told to try again shortly, nothing is processed, and a **staff rescue email**
+(kind "Spam check unavailable", with the escaped submission) goes to the same inbox as escalations, so a legitimate request is not lost. Reason: failing open
+would silently remove abuse protection exactly when Firestore is struggling. Set `failMode: 'open'` to accept instead (marked `degraded`). Limiter failures use a
+separate route/message/rescue kind, so they are distinguishable from Gemini, ticket-save and email failures.
+
+### Privacy and retention
+Only salted SHA-256 hashes of IP and email appear in the document id; documents hold `kind, slot, createdAt, expireAt`. Replace the placeholder `salt`.
+Each document expires `window + retentionGraceSeconds` after window end. Correctness never depends on deletion (the window is in the id). Enable a Firestore **TTL
+policy** on collection group `rate_limits`, field `expireAt`, to delete them (deletion is typically within about a day).
+n8n execution data will still contain request headers (including the IP) for as long as your execution retention keeps it.
+
+### Retries and duplicates
+A legitimate retry after a rejection works once the window rolls over; a rejection claims no email slot, so it does not extend the block. It does consume a
+global and IP slot. A double-click consumes two email slots. The deterministic ticket ID still stops duplicate tickets.
+
+### Trade-offs
+Fixed windows allow up to ~2x the limit across a boundary. Cost is O(limit) Firestore writes per check. Spam can use up the global bucket (cheap denial of
+service for the form), which is why it is generous. A limiter outage with fail-closed can produce many rescue emails.
+
+### What was verified
+- **Node tests (`tests/rate-limit.test.ts`)**: the real Code-node sources with a fake store whose create is atomic: all nine scenarios (within limit, over limit,
+  window expiry, rapid same-source, 300 random interleavings of concurrent submissions, different customers, missing IP, store failure, retry after rejection),
+  IP parsing, normalisation, hashing-only storage, expiry, config clamping, and graph assertions that Gemini/ticket/email nodes are reachable only through a granted claim.
+- **Real n8n 2.47.7 sandbox (own throwaway instance, stubbed Gemini/Firestore/Gmail, real HTTP form posts):** loop wiring, error-output handling, header parsing,
+  limited/allowed/unavailable routing (closed and open), window rollover, and that rejected paths create no ticket or email. This is not your n8n.
+- **NOT verified:** real Firestore atomicity and concurrency (taken from the API's documented create semantics, not run), your reverse-proxy headers, the form's look in a
+  real browser (only HTTP responses were checked), live Gemini/Gmail, TTL deletion, and the public URL change (v2.1 serves `/form/support-request` once n8n assigns a webhookId on import).
+
+### Manual steps
+1. Set a real random `salt` in `Rate limit settings`.
+2. Confirm your proxy sets `X-Forwarded-For` (or switch `ipSource.header`, e.g. `cf-connecting-ip`, hops 1) and that clients cannot inject the last entry.
+3. Create the Firestore TTL policy on `rate_limits.expireAt`; the service account used by n8n needs create rights (it bypasses rules; the dashboard doesn't use this collection).
+4. Set the staff inbox on the rescue email node as for escalations; confirm the credential on `Claim slot`.
+5. Import into a **test** n8n and Firestore project, submit from a real browser, check the three messages render, then exceed each limit and test a simultaneous burst.
 
 ## Reliability layer (retries, duplicates, rescue emails)
 
@@ -122,7 +182,7 @@ Send Response workflow are unchanged. High/Urgent tickets still go to staff only
 - An identical message from the same address in the same hour is treated as a duplicate and dropped silently (a stop node, no email, no ticket).
 - A duplicate is only recognised if the first run's write succeeded. If the first run died before writing, the second run creates the ticket (correct).
 
-### Immediate acknowledgement: **NOT solved, and n8n can't solve it cleanly here**
+### Immediate acknowledgement: **NOT solved (still true for the accepted path), and n8n can't solve it cleanly here**
 With the Form Trigger's default "respond when the form is submitted", the visitor sees the confirmation **before** the ticket is saved, so
 a Firestore outage still shows them "submitted". Retries and the rescue email reduce the chance and make sure staff see the request, but they
 do not make the confirmation truthful. What I found in the n8n 2.47.7 source (read, not run):

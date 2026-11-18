@@ -1,5 +1,12 @@
 # Changelog
 
+## Rate limiting for the public form
+
+- Firestore slot-claim limiter (atomic `create`, hashed keys, TTL field): global 20/min, IP 10/h, unknown-source 20/h, normalised email 3/h, all in `Rate limit settings`.
+- Form Trigger moved to v2.1 with Respond to Webhook: accepted visitors see the unchanged text; invalid, limited or limiter-unavailable visitors get a polite specific message. Rejected requests never reach Gemini, KB, tickets or customer/escalation emails.
+- Fail closed on limiter outage with a staff rescue email (own kind); `failMode: 'open'` available.
+- Tests: `tests/rate-limit.test.ts` (Node, fake atomic store); also run in a stubbed local n8n. Not tested on your n8n, real Firestore, proxy or browser. Setup steps in `docs/n8n-intake-workflow.md`.
+
 ## Intake reliability (phases A-E)
 
 - **Gemini retries** (3 tries) on both nodes; the manual-handling fallback is unchanged.

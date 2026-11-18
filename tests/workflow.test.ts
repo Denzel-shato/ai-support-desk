@@ -238,7 +238,8 @@ test("dashboard rule: only Low/Medium without contradicting flags is automatic; 
 test("graph: single linear path, ONE Firestore create, no upsert, every connection resolves", () => {
   const creates = nodes.filter((n) => n.type.includes("Firestore") && n.parameters.operation === "create");
   const upserts = nodes.filter((n) => n.parameters.operation === "upsert");
-  assert.equal(creates.length, 1);
+  // One ticket create (support_tickets) plus the rate limiter's slot claim (rate_limits, tiny hashed documents).
+  assert.deepEqual(creates.map((n) => `${n.name}:${n.parameters.collection}`).sort(), ["Claim slot:rate_limits", "Create a document:support_tickets"]);
   assert.equal(upserts.length, 0);
   const names = new Set(nodes.map((n) => n.name));
   for (const [from, c] of Object.entries<any>(wf.connections)) {
@@ -250,6 +251,10 @@ test("graph: single linear path, ONE Firestore create, no upsert, every connecti
   // The happy path itself stays linear; see tests/intake-reliability.test.ts for the failure branches.
   const fanOut = Object.entries<any>(wf.connections).filter(([, c]) => c.main.length > 1 || c.main[0].length > 1);
   assert.deepEqual(fanOut.map(([n]) => n).sort(), [
+    "Claim granted?",
+    "Claim next slot?",
+    "Claim refused?",
+    "Claim slot",
     "Create a document",
     "If",
     "Is duplicate submission",
@@ -373,11 +378,15 @@ test("non-text values (a hand-crafted POST) and control characters in name/email
 });
 
 test("graph: nothing that calls Gemini, Firestore or Gmail is reachable except through the 'valid' branch", () => {
-  assert.deepEqual(wf.connections["Form Trigger"].main[0].map((c: any) => c.node), ["Validate submission"]);
+  assert.deepEqual(wf.connections["Form Trigger"].main[0].map((c: any) => c.node), ["Rate limit settings"]);
+  assert.deepEqual(wf.connections["Rate limit settings"].main[0].map((c: any) => c.node), ["Validate submission"]);
   assert.deepEqual(wf.connections["Validate submission"].main[0].map((c: any) => c.node), ["Is submission valid"]);
   const gate = wf.connections["Is submission valid"].main.map((b: any[]) => b.map((c) => c.node));
-  assert.deepEqual(gate, [["Message a model"], ["Rejected submission (stop)"]]);
-  assert.equal(wf.connections["Rejected submission (stop)"], undefined, "the rejected branch ends there");
+  assert.deepEqual(gate, [["Prepare rate limit"], ["Rejected submission (stop)"]]);
+  // The rejected branch only answers the visitor (Reply -> Respond) and ends.
+  assert.deepEqual(wf.connections["Rejected submission (stop)"].main[0].map((c: any) => c.node), ["Reply: invalid"]);
+  assert.deepEqual(wf.connections["Reply: invalid"].main[0].map((c: any) => c.node), ["Respond to form (rejected)"]);
+  assert.equal(wf.connections["Respond to form (rejected)"], undefined, "the rejected branch ends there");
   // Reachable from the rejected branch: nothing.
   const external = (n: Node) => /gemini|firestore|gmail/i.test(n.type);
   const reach = (start: string) => {
@@ -401,8 +410,11 @@ test("graph: nothing that calls Gemini, Firestore or Gmail is reachable except t
 });
 
 test("downstream nodes read the validated values, never the raw form", () => {
-  const text = JSON.stringify(wf.nodes.filter((n: Node) => n.name !== "Validate submission"));
-  assert.equal(/\$\('Form Trigger'\)/.test(text), false);
+  // Only the validator reads the raw form's values; 'Prepare rate limit' reads its request HEADERS (the IP can only come from there).
+  const readers = wf.nodes.filter((n: Node) => /\$\('Form Trigger'\)/.test(JSON.stringify(n.parameters))).map((n: Node) => n.name).sort();
+  assert.deepEqual(readers, ["Prepare rate limit", "Validate submission"]);
+  assert.match(byName("Prepare rate limit").parameters.jsCode, /form\.headers/);
+  assert.doesNotMatch(byName("Prepare rate limit").parameters.jsCode, /form\[|form\.(?!headers)/);
   const form = byName("Form Trigger").parameters.formFields.values;
   assert.ok(form.every((f: any) => f.requiredField === true));
   assert.equal(wf.active, false);

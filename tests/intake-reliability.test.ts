@@ -40,10 +40,10 @@ test("escalation subject never prints a blank or unvalidated priority", () => {
 });
 
 test("the form's confirmation text does not claim the request was recorded or saved", () => {
-  const text: string = wf.nodes[0].parameters.options.respondWithOptions.values.formSubmittedText;
+  const settings = new Function("$input", read("code/rate-limit-settings.js"))({ first: () => ({ json: {} }) })[0].json.settings;
   assert.equal(byName("Form Trigger").type, "n8n-nodes-base.formTrigger");
-  assert.doesNotMatch(text, /recorded|saved|created|ticket/i);
-  assert.match(text, /submitted/i);
+  assert.doesNotMatch(settings.messages.received, /recorded|saved|created|ticket/i);
+  assert.match(settings.messages.received, /submitted/i);
 });
 
 // ---- Phase B: deterministic ticket ID ----------------------------------
@@ -189,9 +189,10 @@ test("no email is reachable unless the ticket was written (or proven to be this 
     }
   }
   assert.deepEqual(targets("Duplicate submission (stop)"), [], "a duplicate sends nothing");
-  // The ONLY ways into the rescue email: Create failure/unclear conflict, or a notification email failing.
+  // The ONLY ways into the rescue email: Create failure/unclear conflict, a notification email failing,
+  // or the rate limiter being unavailable (fail-closed).
   const into = Object.entries(conn).filter(([, c]) => c.main.some((b) => b.some((x) => x.node === "Prepare rescue email"))).map(([n]) => n).sort();
-  assert.deepEqual(into, ["Is duplicate submission", "Is write conflict", "Send a message", "Send a message1"]);
+  assert.deepEqual(into, ["Is duplicate submission", "Is write conflict", "Respond to form (unavailable)", "Send a message", "Send a message1"]);
 });
 
 test("rescue email goes to the same staff inbox as escalations, without n8n attribution", () => {
