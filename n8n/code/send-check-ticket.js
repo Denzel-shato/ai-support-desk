@@ -5,14 +5,11 @@
 const p = $('Validate payload').first().json.p;
 const t = $input.first().json ?? {};
 
-const errText = (t.error === undefined ? '' : typeof t.error === 'string' ? t.error : JSON.stringify(t.error)).toLowerCase();
 const fail = (code, error) => [{ json: { ok: false, code, body: { status: 'failed', error } } }];
 
-if (t.error !== undefined) {
-  return /not[ _-]?found|\b404\b/.test(errText)
-    ? fail(404, 'Ticket not found')
-    : fail(502, 'The ticket could not be read, so nothing was sent');
-}
+// A missing document arrives as an empty item ("Always Output Data"); an error item is a
+// genuine read failure, never "not found".
+if (t.error !== undefined) return fail(502, 'The ticket could not be read, so nothing was sent');
 if (!t._id && !t.customerEmail && !t.reviewStatus) return fail(404, 'Ticket not found');
 
 const norm = (s) => String(s ?? '').replace(/\r\n?/g, '\n').trim();

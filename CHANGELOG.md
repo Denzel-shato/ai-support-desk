@@ -1,5 +1,11 @@
 # Changelog
 
+## Send-response workflow audit fixes
+
+- Only an empty Firestore item counts as a missing document; any error item (even one saying "not found") is now a read failure (`502` for the ticket, `unknown` for the send log), so a genuine error can no longer be mistaken for "not sent yet".
+- Send claims are scoped per attempt (`n8n_send_log/<key>__a<attempt>`); the `__sent` record stays per key. An agent-resolved retry is no longer permanently blocked by an old unresolved claim. Tests added for simultaneous claims, retries, and Gmail success followed by a logging failure.
+- Still not tested against a real n8n activation, Gmail or Firestore.
+
 ## Agent-initiated email delivery: n8n receiver workflow
 
 - New proposed workflow `n8n/ai-support-desk-send-response.json` (inactive, 21 nodes) for the existing dashboard send webhook: header auth, payload and ticket validation, duplicate protection through `n8n_send_log`, one Gmail send, honest `sent` / `failed` / `unknown` answers. Separate from intake: acknowledgements, escalation emails, Gemini and routing are unchanged. n8n never writes tickets; the dashboard records the outcome.

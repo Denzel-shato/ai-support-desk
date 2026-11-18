@@ -96,7 +96,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// n8n Code node \"Check ticket\"  (Run Once for All Items)\n//\n// Compares the request with the stored ticket. Nothing has been sent at this\n// point, so every refusal here is a certain \"not delivered\" (status \"failed\").\nconst p = $('Validate payload').first().json.p;\nconst t = $input.first().json ?? {};\n\nconst errText = (t.error === undefined ? '' : typeof t.error === 'string' ? t.error : JSON.stringify(t.error)).toLowerCase();\nconst fail = (code, error) => [{ json: { ok: false, code, body: { status: 'failed', error } } }];\n\nif (t.error !== undefined) {\n  return /not[ _-]?found|\\b404\\b/.test(errText)\n    ? fail(404, 'Ticket not found')\n    : fail(502, 'The ticket could not be read, so nothing was sent');\n}\nif (!t._id && !t.customerEmail && !t.reviewStatus) return fail(404, 'Ticket not found');\n\nconst norm = (s) => String(s ?? '').replace(/\\r\\n?/g, '\\n').trim();\nconst same = (a, b) => String(a ?? '').trim().toLowerCase() === String(b ?? '').trim().toLowerCase();\n\nif (!same(t.customerEmail, p.customerEmail)) return fail(409, 'The recipient does not match the ticket');\n\nif (p.messageType === 'initial_response') {\n  if (String(t.reviewStatus ?? '').trim().toLowerCase() !== 'approved') return fail(409, 'The response is not approved');\n  if (norm(t.finalResponse) !== p.messageBody) return fail(409, 'The text does not match the approved response');\n}\nreturn [{ json: { ok: true } }];\n"
+        "jsCode": "// n8n Code node \"Check ticket\"  (Run Once for All Items)\n//\n// Compares the request with the stored ticket. Nothing has been sent at this\n// point, so every refusal here is a certain \"not delivered\" (status \"failed\").\nconst p = $('Validate payload').first().json.p;\nconst t = $input.first().json ?? {};\n\nconst fail = (code, error) => [{ json: { ok: false, code, body: { status: 'failed', error } } }];\n\n// A missing document arrives as an empty item (\"Always Output Data\"); an error item is a\n// genuine read failure, never \"not found\".\nif (t.error !== undefined) return fail(502, 'The ticket could not be read, so nothing was sent');\nif (!t._id && !t.customerEmail && !t.reviewStatus) return fail(404, 'Ticket not found');\n\nconst norm = (s) => String(s ?? '').replace(/\\r\\n?/g, '\\n').trim();\nconst same = (a, b) => String(a ?? '').trim().toLowerCase() === String(b ?? '').trim().toLowerCase();\n\nif (!same(t.customerEmail, p.customerEmail)) return fail(409, 'The recipient does not match the ticket');\n\nif (p.messageType === 'initial_response') {\n  if (String(t.reviewStatus ?? '').trim().toLowerCase() !== 'approved') return fail(409, 'The response is not approved');\n  if (norm(t.finalResponse) !== p.messageBody) return fail(409, 'The text does not match the approved response');\n}\nreturn [{ json: { ok: true } }];\n"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -171,7 +171,7 @@
         "operation": "get",
         "projectId": "ai-support-desk-9c4ed",
         "collection": "n8n_send_log",
-        "documentId": "={{ $('Validate payload').first().json.p.key }}"
+        "documentId": "={{ $('Validate payload').first().json.p.key + '__a' + $('Validate payload').first().json.p.attempt }}"
       },
       "type": "n8n-nodes-base.googleFirebaseCloudFirestore",
       "typeVersion": 1.1,
@@ -191,7 +191,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// n8n Code node \"Decide duplicate\"  (Run Once for All Items)\n//\n// Looks at the two n8n-owned log documents for this idempotency key:\n//   n8n_send_log/{key}__sent  exists -> Gmail already sent it: answer \"sent\", send nothing.\n//   n8n_send_log/{key}        exists -> an earlier run started and may or may not have sent it:\n//                                       answer \"unknown\", send nothing.\n//   neither                          -> this run may claim the send.\n// A read that fails for any reason other than \"not found\" is also \"unknown\": we cannot\n// rule out an earlier send, so we must not send.\nconst p = $('Validate payload').first().json.p;\nconst sentRec = $('Get sent record').first().json ?? {};\nconst claimRec = $('Get claim record').first().json ?? {};\n\nconst errText = (j) => (j.error === undefined ? '' : typeof j.error === 'string' ? j.error : JSON.stringify(j.error)).toLowerCase();\nconst isNotFound = (j) => j.error !== undefined && /not[ _-]?found|\\b404\\b/.test(errText(j));\nconst exists = (j) => j.error === undefined && Object.keys(j).length > 0;\nconst unknown = (error) => [{ json: { ok: false, code: 200, body: { status: 'unknown', error } } }];\n\nif (exists(sentRec)) {\n  return [\n    {\n      json: {\n        ok: false,\n        code: 200,\n        body: {\n          status: 'sent',\n          sentAt: typeof sentRec.sentAt === 'string' ? sentRec.sentAt : null,\n          messageId: typeof sentRec.gmailId === 'string' ? sentRec.gmailId : null,\n          deduplicated: true,\n        },\n      },\n    },\n  ];\n}\nif (sentRec.error !== undefined && !isNotFound(sentRec)) return unknown('The send log could not be read');\nif (exists(claimRec)) return unknown('An earlier attempt did not finish');\nif (claimRec.error !== undefined && !isNotFound(claimRec)) return unknown('The send log could not be read');\n\n// Fields the \"Create claim\" node stores.\nreturn [{ json: { ok: true, status: 'sending', startedAt: new Date().toISOString(), ticketId: p.ticketId, messageType: p.messageType, attempt: p.attempt } }];\n"
+        "jsCode": "// n8n Code node \"Decide duplicate\"  (Run Once for All Items)\n//\n// Looks at the two n8n-owned log documents for this idempotency key:\n//   n8n_send_log/{key}__sent  exists -> Gmail already sent it: answer \"sent\", send nothing.\n//   n8n_send_log/{key}__a{attempt} exists -> an earlier run of THIS attempt started and may or\n//                                       may not have sent it: answer \"unknown\", send nothing.\n//   neither                          -> this run may claim the send.\n// The claim is scoped to the attempt number: the dashboard only raises it after an agent\n// explicitly resolved an unconfirmed send (or after a known failure), so a resolved message\n// can be re-sent, while the \"sent\" record (all attempts) still blocks a real duplicate.\n// A missing document arrives as an EMPTY item (\"Always Output Data\"). ANY error item, even\n// one that mentions \"not found\", is \"unknown\": we cannot rule out an earlier send.\nconst p = $('Validate payload').first().json.p;\nconst sentRec = $('Get sent record').first().json ?? {};\nconst claimRec = $('Get claim record').first().json ?? {};\n\nconst exists = (j) => j.error === undefined && Object.keys(j).length > 0;\nconst unknown = (error) => [{ json: { ok: false, code: 200, body: { status: 'unknown', error } } }];\n\nif (exists(sentRec)) {\n  return [\n    {\n      json: {\n        ok: false,\n        code: 200,\n        body: {\n          status: 'sent',\n          sentAt: typeof sentRec.sentAt === 'string' ? sentRec.sentAt : null,\n          messageId: typeof sentRec.gmailId === 'string' ? sentRec.gmailId : null,\n          deduplicated: true,\n        },\n      },\n    },\n  ];\n}\nif (sentRec.error !== undefined) return unknown('The send log could not be read');\nif (exists(claimRec)) return unknown('An earlier attempt did not finish');\nif (claimRec.error !== undefined) return unknown('The send log could not be read');\n\n// Fields the \"Create claim\" node stores.\nreturn [{ json: { ok: true, status: 'sending', startedAt: new Date().toISOString(), ticketId: p.ticketId, messageType: p.messageType, attempt: p.attempt } }];\n"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -242,7 +242,7 @@
         "operation": "create",
         "projectId": "ai-support-desk-9c4ed",
         "collection": "n8n_send_log",
-        "documentId": "={{ $('Validate payload').first().json.p.key }}",
+        "documentId": "={{ $('Validate payload').first().json.p.key + '__a' + $('Validate payload').first().json.p.attempt }}",
         "columns": "status,startedAt,ticketId,messageType,attempt"
       },
       "type": "n8n-nodes-base.googleFirebaseCloudFirestore",
@@ -401,7 +401,7 @@
         "operation": "delete",
         "projectId": "ai-support-desk-9c4ed",
         "collection": "n8n_send_log",
-        "documentId": "={{ $('Validate payload').first().json.p.key }}"
+        "documentId": "={{ $('Validate payload').first().json.p.key + '__a' + $('Validate payload').first().json.p.attempt }}"
       },
       "type": "n8n-nodes-base.googleFirebaseCloudFirestore",
       "typeVersion": 1.1,

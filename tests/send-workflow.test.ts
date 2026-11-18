@@ -182,7 +182,7 @@ test("ticket check: approved ticket with matching recipient (case-insensitive) a
 
 test("ticket check refuses missing tickets, wrong recipients, unapproved or altered responses", () => {
   assert.equal(checkTicket({}).code, 404);
-  assert.equal(checkTicket({ error: "Not found" }).code, 404);
+  assert.equal(checkTicket({ error: "Not found" }).code, 502, "an error item is a read failure, never a missing ticket");
   assert.equal(checkTicket({ error: "503 backend down" }).code, 502);
   assert.equal(checkTicket({ ...approved, customerEmail: "other@example.invalid" }).code, 409);
   assert.equal(checkTicket({ ...approved, reviewStatus: "pending" }).code, 409);
@@ -215,7 +215,8 @@ test("duplicate protection: an unfinished claim answers unknown and sends nothin
 test("duplicate protection: unreadable log means unknown, never a send", () => {
   assert.equal(decide({ error: "503 firestore down" }, {}).ok, false);
   assert.equal(decide({}, { error: "503 firestore down" }).body.status, "unknown");
-  assert.equal(decide({ error: "Not found" }, { error: "404 not found" }).ok, true, "missing docs are the normal first-send case");
+  assert.equal(decide({ error: "Not found" }, {}).ok, false, "an error mentioning 'not found' is still an error, not a missing doc");
+  assert.equal(decide({}, { error: "404 not found" }).body.status, "unknown");
   assert.equal(decide({}, {}).ok, true, "n8n returns an empty item when nothing exists");
 });
 
@@ -273,4 +274,129 @@ test("every response this workflow can produce is read correctly by the dashboar
 
   const missing = checkTicket({});
   assert.equal(interpretWebhookResponse(missing.code, missing.body).kind, "failed");
+});
+
+// ---- Claim scoping, concurrency, retries --------------------------------
+
+test("claim documents are scoped to the attempt; the sent record is keyed by the idempotency key alone", () => {
+  const exprs = (n: string) => String(byName(n).parameters.documentId);
+  for (const n of ["Get claim record", "Create claim", "Delete claim"]) assert.match(exprs(n), /p\.key.*__a.*p\.attempt/, n);
+  assert.match(exprs("Get sent record"), /p\.key \+ '__sent'/);
+  assert.match(exprs("Record sent"), /p\.key \+ '__sent'/);
+  assert.equal(byName("Create claim").parameters.operation, "create", "create-if-absent, never upsert");
+  assert.equal(byName("Create claim").onError, "continueErrorOutput");
+});
+
+// A miniature of the workflow's Firestore + Gmail behaviour built from the real Code-node sources.
+// Firestore "create" is atomic and fails when the document exists (createDocument with documentId).
+class Log {
+  docs = new Map<string, Record<string, any>>();
+  create(id: string, doc: Record<string, any>) {
+    if (this.docs.has(id)) return false;
+    this.docs.set(id, doc);
+    return true;
+  }
+  get = (id: string): Item => ({ json: this.docs.get(id) ?? {} });
+}
+const parse = (body: unknown) => run("send-validate-payload.js", { input: [{ json: { body } }] })[0];
+const emails: string[] = [];
+type Gmail = "ok" | "reject" | "ambiguous";
+// Phase 1 reads and decides; phase 2 claims, sends and records. Split so tests can interleave two runs.
+function phase1(log: Log, body: unknown) {
+  const v = parse(body);
+  const claimId = (p: any) => `${p.key}__a${p.attempt}`;
+  const p = v.json.p;
+  const decided = run("send-decide-duplicate.js", { nodes: { "Validate payload": [v], "Get sent record": [log.get(`${p.key}__sent`)], "Get claim record": [log.get(claimId(p))] } })[0];
+  return { v, p, decided, claimId: claimId(p) };
+}
+function phase2(log: Log, s: ReturnType<typeof phase1>, gmail: Gmail, opts: { recordFails?: boolean } = {}) {
+  if (!s.decided.json.ok) return s.decided.json;
+  if (!log.create(s.claimId, { status: "sending" })) return run("send-claim-failed.js", {})[0].json;
+  if (gmail !== "ok") {
+    const c = run("send-classify-gmail-error.js", { input: [{ json: { error: gmail === "reject" ? { httpCode: 400 } : { message: "timeout" } } }] })[0].json;
+    if (c.releaseClaim) log.docs.delete(s.claimId);
+    return c;
+  }
+  emails.push(s.p.key);
+  const rec = run("send-prepare-sent-record.js", { input: [{ json: { id: "g1" } }], nodes: { "Validate payload": [s.v] } })[0];
+  if (!opts.recordFails) log.create(`${s.p.key}__sent`, rec.json);
+  return run("send-sent-response.js", { nodes: { "Prepare sent record": [rec] } })[0].json;
+}
+const send = (log: Log, gmail: Gmail, body: unknown = goodBody, opts = {}) => phase2(log, phase1(log, body), gmail, opts);
+
+test("simultaneous claim attempts: both pass the duplicate check, only one claims and emails", () => {
+  const log = new Log();
+  emails.length = 0;
+  const a = phase1(log, goodBody);
+  const b = phase1(log, goodBody); // read before A has claimed
+  assert.equal(a.decided.json.ok, true);
+  assert.equal(b.decided.json.ok, true);
+  const ra = phase2(log, a, "ok");
+  const rb = phase2(log, b, "ok");
+  assert.equal(emails.length, 1, "exactly one email");
+  assert.equal(ra.body.status, "sent");
+  assert.equal(rb.body.status, "unknown", "the loser must not claim sent or failed");
+});
+
+test("repeat after a successful send does not email again", () => {
+  const log = new Log();
+  emails.length = 0;
+  assert.equal(send(log, "ok").body.status, "sent");
+  const again = send(log, "ok");
+  assert.equal(again.body.status, "sent");
+  assert.equal(again.body.deduplicated, true);
+  assert.equal(emails.length, 1);
+});
+
+test("Gmail success followed by a logging failure still answers sent and keeps the claim", () => {
+  const log = new Log();
+  emails.length = 0;
+  const r = send(log, "ok", goodBody, { recordFails: true });
+  assert.equal(r.code, 200);
+  assert.equal(r.body.status, "sent");
+  assert.ok(log.docs.has(`${KEY}__a1`), "claim preserved");
+  // The sent record is missing, so a plain repeat of the same attempt must not email again.
+  assert.equal(send(log, "ok").body.status, "unknown");
+  assert.equal(emails.length, 1);
+  assert.equal(byName("Record sent").onError, "continueRegularOutput", "a failed log write must not stop the run before the answer");
+  assert.deepEqual((wf.connections["Record sent"].main[0] as any[]).map((c) => c.node), ["Build sent response"]);
+});
+
+test("clear Gmail rejection releases the claim, so a retry (same key) can send", () => {
+  const log = new Log();
+  emails.length = 0;
+  const r = send(log, "reject");
+  assert.equal(r.body.status, "failed");
+  assert.equal(log.docs.size, 0);
+  assert.equal(send(log, "ok", { ...goodBody, attempt: 2 }).body.status, "sent");
+  assert.equal(emails.length, 1);
+});
+
+test("ambiguous Gmail failure keeps the claim: the same attempt can never email twice", () => {
+  const log = new Log();
+  emails.length = 0;
+  assert.equal(send(log, "ambiguous").body.status, "unknown");
+  assert.ok(log.docs.has(`${KEY}__a1`));
+  assert.equal(send(log, "ok").body.status, "unknown");
+  assert.equal(emails.length, 0);
+});
+
+test("retry after an unconfirmed send: only a new attempt (agent decision) can send again, never one that was recorded as sent", () => {
+  const log = new Log();
+  emails.length = 0;
+  send(log, "ambiguous");
+  // The agent resolved "not delivered" in the dashboard: attempt becomes 2 with the same key.
+  assert.equal(send(log, "ok", { ...goodBody, attempt: 2 }).body.status, "sent");
+  assert.equal(emails.length, 1);
+  // Any later attempt of a message already recorded as sent is answered "sent", with no email.
+  assert.equal(send(log, "ok", { ...goodBody, attempt: 3 }).body.deduplicated, true);
+  assert.equal(emails.length, 1);
+});
+
+test("a valid follow-up is accepted by the whole path without initial-response approval", () => {
+  const log = new Log();
+  emails.length = 0;
+  const body = { ...goodBody, messageType: "follow_up", messageId: KEY, finalResponse: undefined, messageBody: "More info" };
+  assert.equal(send(log, "ok", body).body.status, "sent");
+  assert.equal(checkTicket({ _id: "abc123", customerEmail: "ann@example.invalid" }, P({ messageType: "follow_up", messageBody: "More info" })).ok, true);
 });
