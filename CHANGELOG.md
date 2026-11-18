@@ -1,5 +1,12 @@
 # Changelog
 
+## Security audit (Firestore rules and API)
+
+- Added `firestore.rules` (deny all client/REST access; the app and n8n use service accounts) and `firebase.json`. **Must be deployed manually.** Previously the repo had no rules.
+- Added security response headers and disabled `X-Powered-By` in `next.config.ts`.
+- `GET /api/tickets/[id]/messages` now validates the id itself.
+- Tests: `tests/security.test.ts`. Rules were checked statically only, not in the emulator or a real project. Details in `docs/security.md`.
+
 ## Rate limiting for the public form
 
 - Firestore slot-claim limiter (atomic `create`, hashed keys, TTL field): global 20/min, IP 10/h, unknown-source 20/h, normalised email 3/h, all in `Rate limit settings`.

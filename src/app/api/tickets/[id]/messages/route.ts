@@ -1,5 +1,6 @@
 import { connection, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/auth/require-auth";
+import { InvalidTicketIdError, isValidDocumentId } from "@/lib/firestore-tickets";
 import { listFollowUps } from "@/lib/firestore-ticket-messages";
 import { responseErrorResponse } from "@/lib/response-api-errors";
 import { NO_STORE } from "@/lib/ticket-api-errors";
@@ -17,6 +18,7 @@ export async function GET(
   try {
     await requireAuth(request);
     const { id } = await context.params;
+    if (!isValidDocumentId(id)) throw new InvalidTicketIdError();
     const messages = await listFollowUps(id);
     return NextResponse.json({ messages }, { status: 200, headers: NO_STORE });
   } catch (error) {
