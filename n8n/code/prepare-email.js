@@ -3,6 +3,16 @@
 // Customer and model text goes into HTML emails (some to staff), so it is
 // HTML-escaped here once, and the templates only use `$json.safe.*`.
 const t = $input.first().json;
+// The Create node normally returns `_id`; when this item came from the duplicate-recovery path
+// it did not, so fall back to the deterministic ticket ID from 'Build ticket'.
+let ticketId = t._id ?? t.id ?? t.ticketId;
+if (ticketId === undefined) {
+  try {
+    ticketId = $('Build ticket').first().json.ticketId;
+  } catch {
+    /* leave undefined */
+  }
+}
 
 const esc = (v) =>
   String(v ?? '')
@@ -32,6 +42,7 @@ return [
   {
     json: {
       ...t,
+      _id: ticketId,
       safe: {
         customerName: esc(t.customerName),
         customerEmail: esc(t.customerEmail),

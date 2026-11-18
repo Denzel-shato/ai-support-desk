@@ -45,3 +45,94 @@ test("the form's confirmation text does not claim the request was recorded or sa
   assert.doesNotMatch(text, /recorded|saved|created|ticket/i);
   assert.match(text, /submitted/i);
 });
+
+// ---- Phase B: deterministic ticket ID ----------------------------------
+
+import { createHash } from "node:crypto";
+type Item = { json: Record<string, any> };
+const form = { "Your Name": "Ada", "Your Email": "ada@example.com", "What is it you would like us to fix ?": "App crashes" };
+const model = (obj: unknown) => [{ json: { content: { parts: [{ text: JSON.stringify(obj) }] } } }];
+const classification = model({ category: "Bug", reason: "r", sentiment: "Negative", priority: "Low", summary: "s" });
+const evaluation = model({ kbStatus: "covered", relevantSection: "Crash", coverageReason: "c", supportedSteps: ["Reinstall"], unsupportedParts: [], escalationRequired: false, customerResponse: "Hello Ada" });
+
+function build(f: Record<string, string> = form, opts: { nowMs?: number; executionId?: string | null } = {}): Record<string, any> {
+  const nodesData: Record<string, Item[]> = {
+    "Validate submission": [{ json: { valid: true, errors: [], ...f } }],
+    "Message a model": classification,
+    "Select active articles": [{ json: { articleCount: 2, kbUnavailable: false } }],
+    "Message a model1": evaluation,
+  };
+  const $ = (name: string) => {
+    const items = nodesData[name];
+    if (!items) throw new Error(`no data for ${name}`);
+    return { first: () => items[0], all: () => items };
+  };
+  const nowMs = opts.nowMs ?? Date.parse("2026-11-18T10:15:00Z");
+  class FakeDate extends Date {
+    constructor(value?: any) {
+      super(value === undefined ? nowMs : value);
+    }
+  }
+  const execution = opts.executionId === null ? undefined : { id: opts.executionId ?? "exec-1" };
+  return new Function("$", "$input", "$execution", "Date", read("code/build-ticket.js"))($, { first: () => nodesData["Message a model"][0] }, execution, FakeDate)[0].json;
+}
+
+test("the in-workflow SHA-256 matches Node's crypto (empty, short, unicode, multi-block)", () => {
+  const src = read("code/build-ticket.js").match(/function sha256Hex[\s\S]*?\n}\n/)![0];
+  const sha = new Function(`${src}; return sha256Hex;`)() as (s: string) => string;
+  for (const s of ["", "abc", "ada@example.com", "naïve café 日本語 😀", "x".repeat(55), "x".repeat(56), "x".repeat(64), "x".repeat(1000), "line\nbreak"]) {
+    assert.equal(sha(s), createHash("sha256").update(s, "utf8").digest("hex"), JSON.stringify(s.slice(0, 20)));
+  }
+});
+
+test("the same submission in the same hour gets the same ID; changes to it get a different one", () => {
+  const a = build();
+  assert.match(a.ticketId, /^tk_[0-9a-f]{32}$/);
+  assert.equal(build().ticketId, a.ticketId, "double submit");
+  assert.equal(build({ ...form, "Your Name": "Someone Else" }).ticketId, a.ticketId, "name is not part of the identity");
+  assert.equal(build({ ...form, "Your Email": " ADA@Example.COM " }).ticketId, a.ticketId, "email case/whitespace ignored");
+  assert.equal(build({ ...form, "What is it you would like us to fix ?": "App   crashes\n" }).ticketId, a.ticketId, "whitespace in the message ignored");
+  assert.notEqual(build({ ...form, "What is it you would like us to fix ?": "App crashes again" }).ticketId, a.ticketId);
+  assert.notEqual(build({ ...form, "Your Email": "other@example.com" }).ticketId, a.ticketId);
+});
+
+test("the ID changes with the clock hour, so a later genuine repeat is a new ticket", () => {
+  const h1 = build(form, { nowMs: Date.parse("2026-11-18T10:59:59Z") }).ticketId;
+  const h1b = build(form, { nowMs: Date.parse("2026-11-18T10:00:00Z") }).ticketId;
+  const h2 = build(form, { nowMs: Date.parse("2026-11-18T11:00:00Z") }).ticketId;
+  assert.equal(h1, h1b);
+  assert.notEqual(h1, h2);
+});
+
+test("the ID is a valid Firestore document ID and the Create node uses it", () => {
+  const id = build().ticketId as string;
+  assert.ok(id.length > 0 && !id.includes("/") && !/^__.*__$/.test(id));
+  const create = byName("Create a document");
+  assert.equal(create.parameters.operation, "create");
+  assert.equal(create.parameters.documentId, "={{ $json.ticketId }}");
+  assert.ok(String(create.parameters.columns).split(",").includes("intakeExecutionId"));
+  assert.ok(!String(create.parameters.columns).split(",").includes("ticketId"), "the ID is the document name, not a stored column");
+});
+
+test("the run's execution ID is recorded; a missing $execution never makes Build ticket throw", () => {
+  assert.equal(build(form, { executionId: "exec-42" }).intakeExecutionId, "exec-42");
+  const t = build(form, { executionId: null });
+  assert.equal("intakeExecutionId" in t, false);
+  assert.match(t.ticketId, /^tk_/);
+  assert.equal(t.customerEmail, "ada@example.com");
+});
+
+test("existing ticket fields are unchanged by the ID work (Low covered still automatic)", () => {
+  const t = build();
+  assert.equal(t.escalationStatus, "not_required");
+  assert.equal(t.status, "pending_review");
+  assert.equal(t.reviewStatus, "awaiting_review");
+  assert.equal(t.priority, "Low");
+});
+
+test("Prepare email fields keeps the reference ID when the Create node did not supply _id", () => {
+  const run = (input: Record<string, any>) =>
+    new Function("$", "$input", read("code/prepare-email.js"))((n: string) => ({ first: () => ({ json: n === "Build ticket" ? { ticketId: "tk_abc" } : {} }) }), { first: () => ({ json: input }) })[0].json;
+  assert.equal(run({ customerName: "A" })._id, "tk_abc");
+  assert.equal(run({ customerName: "A", _id: "fromCreate" })._id, "fromCreate");
+});
