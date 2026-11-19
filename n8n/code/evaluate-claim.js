@@ -4,12 +4,13 @@
 //   created                      -> next check, or ALLOWED when every check has a slot
 //   error "already exists"       -> that slot is held by another submission: try the next slot, or
 //                                   LIMITED once all `limit` slots are taken
+//   (every created slot is recorded in rl.held; on a refusal 'Plan release' gives them back)
 //   any other error              -> retried twice immediately (a single blip must not reject a genuine
 //                                   visitor); if it persists the limiter store is unavailable:
 //                                   'unavailable' (failMode closed) or ALLOWED with degraded=true (open)
 // Output: { route: 'next' | 'allowed' | 'limited' | 'unavailable', rl, formSubmittedText?, ... }
 const planned = $('Plan claim').last().json;
-const rl = { ...planned.rl };
+const rl = { ...planned.rl, held: [...(planned.rl.held ?? [])] };
 const input = $input.first().json ?? {};
 const check = rl.checks[rl.idx];
 
@@ -17,7 +18,10 @@ const done = (route, extra = {}) => [{ json: { route, rl, ...extra } }];
 const text = (k) => rl.messages[k];
 
 if (input.error === undefined) {
-  // Slot claimed. Move on to the next check, starting at its first slot.
+  // Slot claimed: remember exactly which document this submission now holds, so a refusal further on can give it
+  // back (and only it). Then move on to the next check, starting at its first slot.
+  rl.held.push({ docId: planned.docId, claimId: rl.claimId });
+  rl.errors = 0;
   if (rl.idx + 1 >= rl.checks.length) return done('allowed', { formSubmittedText: text('received') });
   rl.idx += 1;
   rl.slot = 1;

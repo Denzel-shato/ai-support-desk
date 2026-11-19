@@ -511,7 +511,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// n8n Code node \"Prepare rescue email\"  (mode: Run Once for All Items)\n//\n// One staff email for every situation where the automation could not finish normally and the\n// customer's submission must not be lost. All values are HTML-escaped here; Gmail only prints\n// `html`. The submission always comes from 'Build ticket' (validated, trimmed) and the failure\n// text is shortened, so no stack trace or credential detail is forwarded.\n//\n// kind (decided from where the item came from):\n//   ticket_not_saved        Firestore failed; no ticket exists; no email was sent to anyone\n//   ticket_unclear          the ticket ID already existed but could not be confirmed\n//   acknowledgement_failed  ticket saved; the customer's acknowledgement email failed\n//   escalation_failed       ticket saved; the staff escalation email failed\n//   rate_limit_unavailable  the spam-protection store failed (fail-closed): the submission was refused, no ticket\nconst esc = (v) =>\n  String(v ?? '')\n    .replace(/&/g, '&amp;')\n    .replace(/</g, '&lt;')\n    .replace(/>/g, '&gt;')\n    .replace(/\"/g, '&quot;')\n    .replace(/'/g, '&#39;');\nconst ran = (name) => {\n  try {\n    return $(name).isExecuted === true;\n  } catch {\n    return false;\n  }\n};\n\nlet t = {};\ntry {\n  t = $('Build ticket').first().json ?? {};\n} catch {\n  // No ticket was built (the rate limiter refused the submission first): use the validated form values.\n  try {\n    const v = $('Validate submission').first().json ?? {};\n    t = { customerName: v['Your Name'], customerEmail: v['Your Email'], message: v['What is it you would like us to fix ?'] };\n  } catch {\n    /* nothing to show */\n  }\n}\nconst input = $input.first().json ?? {};\n\nlet kind;\nif (input.route === 'unavailable') kind = 'rate_limit_unavailable';\nelse if (input.route === 'unclear') kind = 'ticket_unclear';\nelse if (input.kind === 'failure') kind = 'ticket_not_saved';\nelse if (ran('Send a message1')) kind = 'acknowledgement_failed';\nelse if (ran('Send a message')) kind = 'escalation_failed';\nelse kind = 'ticket_not_saved';\n\nconst TEXT = {\n  rate_limit_unavailable: {\n    label: 'Spam check unavailable: request held',\n    what: 'The rate limiter could not reach Firestore, so this submission was refused to avoid bypassing spam protection. No ticket was created and nothing was sent to the customer. The visitor was told to try again later.',\n    todo: 'If this looks like a genuine request, handle it manually. Then check Firestore access to the rate_limits collection.',\n  },\n  ticket_not_saved: {\n    label: 'Ticket NOT saved',\n    what: 'The ticket could not be saved to Firestore, so it will not appear in the dashboard. No email was sent to the customer or to staff. The customer was shown a \"submitted\" message.',\n    todo: 'Please handle this request manually and contact the customer.',\n  },\n  ticket_unclear: {\n    label: 'Ticket status unclear',\n    what: 'A ticket with this ID already exists but could not be confirmed as part of this submission. No email was sent.',\n    todo: 'Check the dashboard for this customer. If there is no ticket, handle this request manually.',\n  },\n  acknowledgement_failed: {\n    label: 'Customer acknowledgement failed',\n    what: 'The ticket was saved, but the acknowledgement email to the customer could not be sent.',\n    todo: 'The ticket is in the dashboard. Consider replying to the customer yourself.',\n  },\n  escalation_failed: {\n    label: 'Escalation email failed',\n    what: 'The ticket was saved, but the escalation email to the staff inbox could not be sent (this message is the fallback).',\n    todo: 'The ticket is in the dashboard. Please review it now.',\n  },\n}[kind];\n\nconst clean = (v) => String(v ?? '').replace(/[\\u0000-\\u001f\\u007f]+/g, ' ').trim();\nconst failure = clean(\n  typeof input.error === 'string' ? input.error : (input.error?.message ?? input.error?.description ?? ''),\n).slice(0, 300);\nlet executionId = '';\ntry {\n  executionId = String($execution.id ?? '');\n} catch {\n  /* not available */\n}\n\nconst row = (label, value, pre) =>\n  `<tr><td style=\"padding:6px 16px 6px 0; vertical-align:top; color:#6b625a;\">${esc(label)}</td>` +\n  `<td style=\"padding:6px 0; ${pre ? 'white-space:pre-line;' : ''}\">${esc(value)}</td></tr>`;\n\nconst html =\n  `<div style=\"font-family:Arial, Helvetica, sans-serif; color:#1f1a17; max-width:640px;\">` +\n  `<h2 style=\"margin:0 0 12px; color:#991b1b;\">${esc(TEXT.label)}</h2>` +\n  `<p style=\"margin:0 0 8px;\">${esc(TEXT.what)}</p>` +\n  `<p style=\"margin:0 0 16px;\"><strong>${esc(TEXT.todo)}</strong></p>` +\n  `<table style=\"border-collapse:collapse; font-size:14px;\">` +\n  row('Customer', clean(t.customerName)) +\n  row('Email', clean(t.customerEmail)) +\n  row('Message', String(t.message ?? ''), true) +\n  (t.ticketId ? row('Ticket ID', clean(t.ticketId)) + row('Priority', clean(t.priority) || 'Unknown') : '') +\n  (failure ? row('Error', failure) : '') +\n  (executionId ? row('n8n execution', executionId) : '') +\n  `</table>` +\n  `<p style=\"margin-top:20px; font-size:11px; color:#9a9086;\">Generated automatically by the AI Support Desk</p></div>`;\n\nconst subject = `⚠️ ${TEXT.label} — ${clean(t.customerName).slice(0, 80)}`;\nreturn [{ json: { kind, subject, html } }];\n"
+        "jsCode": "// n8n Code node \"Prepare rescue email\"  (mode: Run Once for All Items)\n//\n// One staff email for every situation where the automation could not finish normally and the\n// customer's submission must not be lost. All values are HTML-escaped here; Gmail only prints\n// `html`. The submission always comes from 'Build ticket' (validated, trimmed) and the failure\n// text is shortened, so no stack trace or credential detail is forwarded.\n//\n// kind (decided from where the item came from):\n//   ticket_not_saved        Firestore failed; no ticket exists; no email was sent to anyone\n//   ticket_unclear          the ticket ID already existed but could not be confirmed\n//   acknowledgement_failed  ticket saved; the customer's acknowledgement email failed\n//   escalation_failed       ticket saved; the staff escalation email failed\n//   rate_limit_unavailable  the spam-protection store failed (fail-closed): the submission was refused, no ticket\n//   rate_limit_suppressed   the notice sent ONCE per window when the cap on rate_limit_unavailable emails is reached\n//                           (contains no customer data)\nconst esc = (v) =>\n  String(v ?? '')\n    .replace(/&/g, '&amp;')\n    .replace(/</g, '&lt;')\n    .replace(/>/g, '&gt;')\n    .replace(/\"/g, '&quot;')\n    .replace(/'/g, '&#39;');\nconst ran = (name) => {\n  try {\n    return $(name).isExecuted === true;\n  } catch {\n    return false;\n  }\n};\n\nlet t = {};\ntry {\n  t = $('Build ticket').first().json ?? {};\n} catch {\n  // No ticket was built (the rate limiter refused the submission first): use the validated form values.\n  try {\n    const v = $('Validate submission').first().json ?? {};\n    t = { customerName: v['Your Name'], customerEmail: v['Your Email'], message: v['What is it you would like us to fix ?'] };\n  } catch {\n    /* nothing to show */\n  }\n}\nconst input = $input.first().json ?? {};\n\nlet kind;\nif (input.route === 'unavailable' && input.rescue === 'notice') kind = 'rate_limit_suppressed';\nelse if (input.route === 'unavailable') kind = 'rate_limit_unavailable';\nelse if (input.route === 'unclear') kind = 'ticket_unclear';\nelse if (input.kind === 'failure') kind = 'ticket_not_saved';\nelse if (ran('Send a message1')) kind = 'acknowledgement_failed';\nelse if (ran('Send a message')) kind = 'escalation_failed';\nelse kind = 'ticket_not_saved';\n\nconst TEXT = {\n  rate_limit_suppressed: {\n    label: 'Spam check still unavailable: further emails held',\n    what: 'The rate limiter is still failing, so further submissions are being refused (each visitor is told to try again later). To protect this inbox, no more individual emails will be sent about them in this time window.',\n    todo: 'Fix access to the Firestore rate_limits collection. Refused submissions are listed as n8n executions (route \"unavailable\") and, when Firestore allows, as held_* documents in rate_limits.',\n  },\n  rate_limit_unavailable: {\n    label: 'Spam check unavailable: request held',\n    what: 'The rate limiter could not reach Firestore, so this submission was refused to avoid bypassing spam protection. No ticket was created and nothing was sent to the customer. The visitor was told to try again later.',\n    todo: 'If this looks like a genuine request, handle it manually. Then check Firestore access to the rate_limits collection.',\n  },\n  ticket_not_saved: {\n    label: 'Ticket NOT saved',\n    what: 'The ticket could not be saved to Firestore, so it will not appear in the dashboard. No email was sent to the customer or to staff. The customer was shown a \"submitted\" message.',\n    todo: 'Please handle this request manually and contact the customer.',\n  },\n  ticket_unclear: {\n    label: 'Ticket status unclear',\n    what: 'A ticket with this ID already exists but could not be confirmed as part of this submission. No email was sent.',\n    todo: 'Check the dashboard for this customer. If there is no ticket, handle this request manually.',\n  },\n  acknowledgement_failed: {\n    label: 'Customer acknowledgement failed',\n    what: 'The ticket was saved, but the acknowledgement email to the customer could not be sent.',\n    todo: 'The ticket is in the dashboard. Consider replying to the customer yourself.',\n  },\n  escalation_failed: {\n    label: 'Escalation email failed',\n    what: 'The ticket was saved, but the escalation email to the staff inbox could not be sent (this message is the fallback).',\n    todo: 'The ticket is in the dashboard. Please review it now.',\n  },\n}[kind];\n\nconst clean = (v) => String(v ?? '').replace(/[\\u0000-\\u001f\\u007f]+/g, ' ').trim();\nconst failure = clean(\n  typeof input.error === 'string' ? input.error : (input.error?.message ?? input.error?.description ?? ''),\n).slice(0, 300);\nlet executionId = '';\ntry {\n  executionId = String($execution.id ?? '');\n} catch {\n  /* not available */\n}\n\nconst row = (label, value, pre) =>\n  `<tr><td style=\"padding:6px 16px 6px 0; vertical-align:top; color:#6b625a;\">${esc(label)}</td>` +\n  `<td style=\"padding:6px 0; ${pre ? 'white-space:pre-line;' : ''}\">${esc(value)}</td></tr>`;\n\nconst html =\n  `<div style=\"font-family:Arial, Helvetica, sans-serif; color:#1f1a17; max-width:640px;\">` +\n  `<h2 style=\"margin:0 0 12px; color:#991b1b;\">${esc(TEXT.label)}</h2>` +\n  `<p style=\"margin:0 0 8px;\">${esc(TEXT.what)}</p>` +\n  `<p style=\"margin:0 0 16px;\"><strong>${esc(TEXT.todo)}</strong></p>` +\n  `<table style=\"border-collapse:collapse; font-size:14px;\">` +\n  (kind === 'rate_limit_suppressed'\n    ? ''\n    : row('Customer', clean(t.customerName)) + row('Email', clean(t.customerEmail)) + row('Message', String(t.message ?? ''), true)) +\n  (t.ticketId ? row('Ticket ID', clean(t.ticketId)) + row('Priority', clean(t.priority) || 'Unknown') : '') +\n  (failure ? row('Error', failure) : '') +\n  (executionId ? row('n8n execution', executionId) : '') +\n  `</table>` +\n  `<p style=\"margin-top:20px; font-size:11px; color:#9a9086;\">Generated automatically by the AI Support Desk</p></div>`;\n\nconst subject = kind === 'rate_limit_suppressed' ? `⚠️ ${TEXT.label}` : `⚠️ ${TEXT.label} — ${clean(t.customerName).slice(0, 80)}`;\nreturn [{ json: { kind, subject, html } }];\n"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -546,11 +546,12 @@
       },
       "retryOnFail": true,
       "maxTries": 3,
-      "waitBetweenTries": 2000
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput"
     },
     {
       "parameters": {
-        "jsCode": "// n8n Code node \"Rate limit settings\"  (mode: Run Once for All Items)\n//\n// EVERY tunable value of the rate limiter lives here and nowhere else. Edit this object,\n// nothing else in the workflow needs to change. Values outside the bounds below are clamped\n// by 'Prepare rate limit' (limit 1-20 per window, window 10 s - 24 h).\n//\n// How a limit works: each submission must CLAIM one numbered slot (1..limit) for its source in\n// the current fixed time window. A slot is a Firestore document created with \"create\", which\n// fails if it already exists, so two simultaneous submissions can never both get the same slot\n// and at most `limit` submissions per source per window can succeed.\nconst SETTINGS = {\n  // What to do when the limiter itself cannot be reached (Firestore error other than \"slot taken\"):\n  //   'closed' = refuse the submission, tell the visitor to try later, and email the staff inbox the\n  //              submission so nothing is lost (a documented security decision: never silently bypass).\n  //   'open'   = let the submission through unlimited. Only choose this if losing the limit is\n  //              worse for you than abuse getting through while Firestore is failing.\n  failMode: 'closed',\n\n  // Mixed into every stored key so the stored hashes can't be reversed by guessing IP addresses or\n  // emails. REPLACE WITH A LONG RANDOM STRING and keep it secret; changing it resets all counters.\n  salt: 'CHANGE-ME-TO-A-LONG-RANDOM-STRING',\n\n  // Where the visitor's IP comes from. The Form Trigger exposes request HEADERS only (no socket address),\n  // and anyone can send any header themselves, so this is trustworthy ONLY when your own reverse proxy /\n  // tunnel appends the real client address to this header and n8n is not reachable any other way.\n  //   header: lower-case header name. 'x-forwarded-for' (list; proxies append), 'cf-connecting-ip'\n  //           (Cloudflare, single value) or 'x-real-ip'. '' = no trusted source: everyone is \"unknown\".\n  //   trustedProxyHops: for a list header, how many entries from the RIGHT were added by YOUR proxies.\n  //           1 = take the last entry (one proxy). Entries further left are client-supplied and ignored.\n  ipSource: { header: 'x-forwarded-for', trustedProxyHops: 1 },\n\n  // Each check: enabled, limit (submissions) per windowSeconds. Fixed windows aligned to the clock.\n  checks: {\n    // Everyone together: stops floods (incl. ones that fake the IP header or rotate emails) from running up\n    // Gemini/Firestore cost. Only a sustained 20+ per minute trips it.\n    global: { enabled: true, limit: 20, windowSeconds: 60 },\n    // Per source IP (IPv6 counted per /64). Generous because offices, schools and mobile carriers put many\n    // real people behind one address.\n    ip: { enabled: true, limit: 10, windowSeconds: 3600 },\n    // Used instead of `ip` when no trustworthy IP is available: all such visitors share this one bucket.\n    unknownIp: { limit: 20, windowSeconds: 3600 },\n    // Per normalised email (lower-case, +tag removed, Gmail dots removed). A person rarely needs more than 3\n    // support requests an hour.\n    email: { enabled: true, limit: 3, windowSeconds: 3600 },\n  },\n\n  // Stored limiter documents get an `expireAt` this long after their window ends. Enable a Firestore TTL\n  // policy on collection group `rate_limits`, field `expireAt`, so they are deleted automatically.\n  retentionGraceSeconds: 3600,\n\n  // Exactly what the visitor sees (the form shows this text). They deliberately reveal no limits or reasons.\n  messages: {\n    received:\n      'Thank you. Your request has been submitted and is now being processed. If you do not hear from us, please contact us again.',\n    invalid: \"We couldn't accept your request. Please check your name, email address and message, then try again.\",\n    limited: \"You've sent several requests recently, so we can't accept another one right now. Please try again later.\",\n    unavailable: \"We couldn't process your request right now. Please try again in a little while.\",\n  },\n};\n\n// Pass the incoming item through unchanged; later nodes read SETTINGS from here.\nreturn [{ json: { ...$input.first().json, settings: SETTINGS } }];\n"
+        "jsCode": "// n8n Code node \"Rate limit settings\"  (mode: Run Once for All Items)\n//\n// EVERY tunable value of the rate limiter lives here and nowhere else. Edit this object,\n// nothing else in the workflow needs to change. Values outside the bounds below are clamped\n// by 'Prepare rate limit' (limit 1-20 per window, window 10 s - 24 h).\n//\n// Claim ORDER (not configurable): narrow checks first (IP, then email), the global flood cap LAST. A refused\n// submission gives back every slot it took, so rejections never use up anyone's capacity (see docs).\n//\n// How a limit works: each submission must CLAIM one numbered slot (1..limit) for its source in\n// the current fixed time window. A slot is a Firestore document created with \"create\", which\n// fails if it already exists, so two simultaneous submissions can never both get the same slot\n// and at most `limit` submissions per source per window can succeed.\nconst SETTINGS = {\n  // What to do when the limiter itself cannot be reached (Firestore error other than \"slot taken\"):\n  //   'closed' = refuse the submission, tell the visitor to try later, and email the staff inbox the\n  //              submission so nothing is lost (a documented security decision: never silently bypass).\n  //   'open'   = let the submission through unlimited. Only choose this if losing the limit is\n  //              worse for you than abuse getting through while Firestore is failing.\n  failMode: 'closed',\n\n  // Mixed into every stored key so the stored hashes can't be reversed by guessing IP addresses or\n  // emails. REPLACE WITH A LONG RANDOM STRING and keep it secret; changing it resets all counters.\n  salt: 'CHANGE-ME-TO-A-LONG-RANDOM-STRING',\n\n  // Where the visitor's IP comes from. The Form Trigger exposes request HEADERS only (no socket address),\n  // and anyone can send any header themselves, so this is trustworthy ONLY when your own reverse proxy /\n  // tunnel appends the real client address to this header and n8n is not reachable any other way.\n  //   header: lower-case header name. 'x-forwarded-for' (list; proxies append), 'cf-connecting-ip'\n  //           (Cloudflare, single value) or 'x-real-ip'. '' = no trusted source: everyone is \"unknown\".\n  //   trustedProxyHops: for a list header, how many entries from the RIGHT were added by YOUR proxies.\n  //           1 = take the last entry (one proxy). Entries further left are client-supplied and ignored.\n  ipSource: { header: 'x-forwarded-for', trustedProxyHops: 1 },\n\n  // Each check: enabled, limit (submissions) per windowSeconds. Fixed windows aligned to the clock.\n  checks: {\n    // Everyone together: stops floods (incl. ones that fake the IP header or rotate emails) from running up\n    // Gemini/Firestore cost. Only a sustained 20+ per minute trips it.\n    global: { enabled: true, limit: 20, windowSeconds: 60 },\n    // Per source IP (IPv6 counted per /64). Generous because offices, schools and mobile carriers put many\n    // real people behind one address.\n    ip: { enabled: true, limit: 10, windowSeconds: 3600 },\n    // Used instead of `ip` when no trustworthy IP is available: all such visitors share this one bucket.\n    unknownIp: { limit: 20, windowSeconds: 3600 },\n    // Per normalised email (lower-case, +tag removed, Gmail dots removed). A person rarely needs more than 3\n    // support requests an hour.\n    email: { enabled: true, limit: 3, windowSeconds: 3600 },\n  },\n\n  // Protection for the staff inbox when the limiter store is down (fail-closed refusals each want a rescue\n  // email). Per window, at most `maxEmails` detailed rescue emails are sent, then ONE short notice that more\n  // are being held, then nothing. Applies ONLY to refused submissions (the visitor was told to try again);\n  // rescue emails for tickets that were accepted but not saved are never throttled. Windows align to the clock.\n  rescue: { maxEmails: 3, windowSeconds: 3600, heldRetentionSeconds: 2592000 },\n\n  // Stored limiter documents get an `expireAt` this long after their window ends. Enable a Firestore TTL\n  // policy on collection group `rate_limits`, field `expireAt`, so they are deleted automatically.\n  retentionGraceSeconds: 3600,\n\n  // Exactly what the visitor sees (the form shows this text). They deliberately reveal no limits or reasons.\n  messages: {\n    received:\n      'Thank you. Your request has been submitted and is now being processed. If you do not hear from us, please contact us again.',\n    invalid: \"We couldn't accept your request. Please check your name, email address and message, then try again.\",\n    limited: \"You've sent several requests recently, so we can't accept another one right now. Please try again later.\",\n    unavailable: \"We couldn't process your request right now. Please try again in a little while.\",\n  },\n};\n\n// Pass the incoming item through unchanged; later nodes read SETTINGS from here.\nreturn [{ json: { ...$input.first().json, settings: SETTINGS } }];\n"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -563,7 +564,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// n8n Code node \"Prepare rate limit\"  (mode: Run Once for All Items)\n//\n// Runs only for submissions that passed 'Validate submission'. Works out WHO is submitting\n// (trusted IP header, normalised email), turns that into salted hashes, and lists the checks to\n// claim in order. Raw IP addresses and emails are never written anywhere.\nconst S = $('Rate limit settings').first().json.settings;\nconst form = $('Form Trigger').first().json ?? {};\nconst email = String($('Validate submission').first().json['Your Email'] ?? '');\n\n// ---- pure-JS SHA-256 (the Code node allows no built-in modules unless the operator enables them).\n// Identical to the function in 'Build ticket'.\nfunction sha256Hex(text) {\n  const bytes = [];\n  const utf8 = unescape(encodeURIComponent(text));\n  for (let i = 0; i < utf8.length; i++) bytes.push(utf8.charCodeAt(i));\n  const K = [\n    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,\n    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,\n    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,\n    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,\n  ];\n  const H = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];\n  const bitLen = bytes.length * 8;\n  bytes.push(0x80);\n  while (bytes.length % 64 !== 56) bytes.push(0);\n  for (let i = 7; i >= 0; i--) bytes.push(i >= 4 ? 0 : (bitLen >>> (i * 8)) & 0xff);\n  const rotr = (x, n) => (x >>> n) | (x << (32 - n));\n  for (let off = 0; off < bytes.length; off += 64) {\n    const w = new Array(64);\n    for (let i = 0; i < 16; i++) w[i] = (bytes[off + 4 * i] << 24) | (bytes[off + 4 * i + 1] << 16) | (bytes[off + 4 * i + 2] << 8) | bytes[off + 4 * i + 3];\n    for (let i = 16; i < 64; i++) {\n      const s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >>> 3);\n      const s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >>> 10);\n      w[i] = (w[i - 16] + s0 + w[i - 7] + s1) | 0;\n    }\n    let [a, b, c, d, e, f, g, h] = H;\n    for (let i = 0; i < 64; i++) {\n      const t1 = (h + (rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)) + ((e & f) ^ (~e & g)) + K[i] + w[i]) | 0;\n      const t2 = ((rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)) + ((a & b) ^ (a & c) ^ (b & c))) | 0;\n      h = g; g = f; f = e; e = (d + t1) | 0; d = c; c = b; b = a; a = (t1 + t2) | 0;\n    }\n    H[0] = (H[0] + a) | 0; H[1] = (H[1] + b) | 0; H[2] = (H[2] + c) | 0; H[3] = (H[3] + d) | 0;\n    H[4] = (H[4] + e) | 0; H[5] = (H[5] + f) | 0; H[6] = (H[6] + g) | 0; H[7] = (H[7] + h) | 0;\n  }\n  return H.map((x) => (x >>> 0).toString(16).padStart(8, '0')).join('');\n}\n\nconst num = (v, lo, hi, dflt) => (Number.isFinite(Number(v)) ? Math.min(hi, Math.max(lo, Math.floor(Number(v)))) : dflt);\n\n// ---- trusted client IP (or null)\nconst IPV4 = /^(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})$/;\nfunction cleanIp(raw) {\n  const s = String(raw ?? '').trim().replace(/^\\[|\\]$/g, '');\n  const m = IPV4.exec(s);\n  if (m) {\n    const o = m.slice(1).map(Number);\n    if (o.some((n) => n > 255)) return null;\n    const [a, b] = o;\n    // Private, loopback, link-local, CGNAT and \"this network\" are never a real client: a proxy that\n    // reports one is misconfigured, so the source is treated as unknown instead of sharing a bucket.\n    if (a === 10 || a === 127 || a === 0 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127)) return null;\n    return o.join('.');\n  }\n  if (/^[0-9a-f:.]+$/i.test(s) && s.includes(':') && !s.includes(':::')) {\n    const lower = s.toLowerCase();\n    if (lower === '::' || lower === '::1' || /^f[cd]/.test(lower) || /^fe[89ab]/.test(lower)) return null;\n    const halves = lower.split('::');\n    if (halves.length > 2) return null;\n    const left = halves[0] ? halves[0].split(':') : [];\n    const right = halves.length === 2 && halves[1] ? halves[1].split(':') : [];\n    const missing = 8 - left.length - right.length;\n    if ((halves.length === 1 && missing !== 0) || missing < 0) return null;\n    const groups = [...left, ...Array(halves.length === 2 ? missing : 0).fill('0'), ...right];\n    if (groups.length !== 8 || groups.some((g) => !/^[0-9a-f]{1,4}$/.test(g))) return null;\n    return groups.slice(0, 4).map((g) => g.padStart(4, '0')).join(':') + '::/64';\n  }\n  return null;\n}\nfunction sourceIp() {\n  const header = String(S.ipSource?.header ?? '').toLowerCase().trim();\n  if (!header) return null;\n  const headers = form.headers && typeof form.headers === 'object' ? form.headers : {};\n  const value = headers[header];\n  if (typeof value !== 'string' || !value.trim()) return null;\n  const parts = value.split(',').map((p) => p.trim()).filter(Boolean);\n  const hops = num(S.ipSource?.trustedProxyHops, 1, 10, 1);\n  if (parts.length < hops) return null; // fewer entries than trusted proxies: cannot be ours\n  return cleanIp(parts[parts.length - hops]);\n}\n\n// ---- normalised email: lower-case, drop +tag, drop dots for Gmail\nfunction normEmail(e) {\n  const v = e.trim().toLowerCase();\n  const at = v.lastIndexOf('@');\n  if (at < 1) return v;\n  let local = v.slice(0, at).split('+')[0];\n  let domain = v.slice(at + 1);\n  if (domain === 'googlemail.com') domain = 'gmail.com';\n  if (domain === 'gmail.com') local = local.replace(/\\./g, '');\n  return `${local}@${domain}`;\n}\n\nconst nowMs = Date.now();\nconst grace = num(S.retentionGraceSeconds, 0, 7 * 86400, 3600);\nconst hash = (kind, value) => sha256Hex(`${S.salt}|${kind}|${value}`).slice(0, 24);\n\nconst ip = sourceIp();\nconst defs = [];\nif (S.checks?.global?.enabled !== false) defs.push({ kind: 'global', key: 'all', cfg: S.checks.global });\nif (S.checks?.ip?.enabled !== false) {\n  defs.push(ip ? { kind: 'ip', key: hash('ip', ip), cfg: S.checks.ip } : { kind: 'unknown', key: 'all', cfg: S.checks.unknownIp });\n}\nif (S.checks?.email?.enabled !== false) defs.push({ kind: 'email', key: hash('email', normEmail(email)), cfg: S.checks.email });\n\nconst checks = defs.map(({ kind, key, cfg }) => {\n  const limit = num(cfg?.limit, 1, 20, 3);\n  const windowSeconds = num(cfg?.windowSeconds, 10, 86400, 3600);\n  const windowId = Math.floor(nowMs / 1000 / windowSeconds);\n  return { kind, key, limit, windowSeconds, windowId, expireAt: new Date((windowId + 1) * windowSeconds * 1000 + grace * 1000).toISOString() };\n});\n\nreturn [\n  {\n    json: {\n      rl: {\n        checks,\n        idx: 0,\n        slot: 1,\n        errors: 0,\n        nowIso: new Date(nowMs).toISOString(),\n        failMode: S.failMode === 'open' ? 'open' : 'closed',\n        messages: S.messages,\n        sourceKnown: ip !== null,\n        degraded: false,\n      },\n    },\n  },\n];\n"
+        "jsCode": "// n8n Code node \"Prepare rate limit\"  (mode: Run Once for All Items)\n//\n// Runs only for submissions that passed 'Validate submission'. Works out WHO is submitting\n// (trusted IP header, normalised email), turns that into salted hashes, and lists the checks to\n// claim in order. Raw IP addresses and emails are never written anywhere.\nconst S = $('Rate limit settings').first().json.settings;\nconst form = $('Form Trigger').first().json ?? {};\nconst email = String($('Validate submission').first().json['Your Email'] ?? '');\n\n// ---- pure-JS SHA-256 (the Code node allows no built-in modules unless the operator enables them).\n// Identical to the function in 'Build ticket'.\nfunction sha256Hex(text) {\n  const bytes = [];\n  const utf8 = unescape(encodeURIComponent(text));\n  for (let i = 0; i < utf8.length; i++) bytes.push(utf8.charCodeAt(i));\n  const K = [\n    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,\n    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,\n    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,\n    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,\n  ];\n  const H = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];\n  const bitLen = bytes.length * 8;\n  bytes.push(0x80);\n  while (bytes.length % 64 !== 56) bytes.push(0);\n  for (let i = 7; i >= 0; i--) bytes.push(i >= 4 ? 0 : (bitLen >>> (i * 8)) & 0xff);\n  const rotr = (x, n) => (x >>> n) | (x << (32 - n));\n  for (let off = 0; off < bytes.length; off += 64) {\n    const w = new Array(64);\n    for (let i = 0; i < 16; i++) w[i] = (bytes[off + 4 * i] << 24) | (bytes[off + 4 * i + 1] << 16) | (bytes[off + 4 * i + 2] << 8) | bytes[off + 4 * i + 3];\n    for (let i = 16; i < 64; i++) {\n      const s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >>> 3);\n      const s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >>> 10);\n      w[i] = (w[i - 16] + s0 + w[i - 7] + s1) | 0;\n    }\n    let [a, b, c, d, e, f, g, h] = H;\n    for (let i = 0; i < 64; i++) {\n      const t1 = (h + (rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)) + ((e & f) ^ (~e & g)) + K[i] + w[i]) | 0;\n      const t2 = ((rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)) + ((a & b) ^ (a & c) ^ (b & c))) | 0;\n      h = g; g = f; f = e; e = (d + t1) | 0; d = c; c = b; b = a; a = (t1 + t2) | 0;\n    }\n    H[0] = (H[0] + a) | 0; H[1] = (H[1] + b) | 0; H[2] = (H[2] + c) | 0; H[3] = (H[3] + d) | 0;\n    H[4] = (H[4] + e) | 0; H[5] = (H[5] + f) | 0; H[6] = (H[6] + g) | 0; H[7] = (H[7] + h) | 0;\n  }\n  return H.map((x) => (x >>> 0).toString(16).padStart(8, '0')).join('');\n}\n\nconst num = (v, lo, hi, dflt) => (Number.isFinite(Number(v)) ? Math.min(hi, Math.max(lo, Math.floor(Number(v)))) : dflt);\n\n// ---- trusted client IP (or null)\nconst IPV4 = /^(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})\\.(\\d{1,3})$/;\nfunction cleanIp(raw) {\n  const s = String(raw ?? '').trim().replace(/^\\[|\\]$/g, '');\n  const m = IPV4.exec(s);\n  if (m) {\n    const o = m.slice(1).map(Number);\n    if (o.some((n) => n > 255)) return null;\n    const [a, b] = o;\n    // Private, loopback, link-local, CGNAT and \"this network\" are never a real client: a proxy that\n    // reports one is misconfigured, so the source is treated as unknown instead of sharing a bucket.\n    if (a === 10 || a === 127 || a === 0 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127)) return null;\n    return o.join('.');\n  }\n  if (/^[0-9a-f:.]+$/i.test(s) && s.includes(':') && !s.includes(':::')) {\n    const lower = s.toLowerCase();\n    if (lower === '::' || lower === '::1' || /^f[cd]/.test(lower) || /^fe[89ab]/.test(lower)) return null;\n    const halves = lower.split('::');\n    if (halves.length > 2) return null;\n    const left = halves[0] ? halves[0].split(':') : [];\n    const right = halves.length === 2 && halves[1] ? halves[1].split(':') : [];\n    const missing = 8 - left.length - right.length;\n    if ((halves.length === 1 && missing !== 0) || missing < 0) return null;\n    const groups = [...left, ...Array(halves.length === 2 ? missing : 0).fill('0'), ...right];\n    if (groups.length !== 8 || groups.some((g) => !/^[0-9a-f]{1,4}$/.test(g))) return null;\n    return groups.slice(0, 4).map((g) => g.padStart(4, '0')).join(':') + '::/64';\n  }\n  return null;\n}\nfunction sourceIp() {\n  const header = String(S.ipSource?.header ?? '').toLowerCase().trim();\n  if (!header) return null;\n  const headers = form.headers && typeof form.headers === 'object' ? form.headers : {};\n  const value = headers[header];\n  if (typeof value !== 'string' || !value.trim()) return null;\n  const parts = value.split(',').map((p) => p.trim()).filter(Boolean);\n  const hops = num(S.ipSource?.trustedProxyHops, 1, 10, 1);\n  if (parts.length < hops) return null; // fewer entries than trusted proxies: cannot be ours\n  return cleanIp(parts[parts.length - hops]);\n}\n\n// ---- normalised email: lower-case, drop +tag, drop dots for Gmail\nfunction normEmail(e) {\n  const v = e.trim().toLowerCase();\n  const at = v.lastIndexOf('@');\n  if (at < 1) return v;\n  let local = v.slice(0, at).split('+')[0];\n  let domain = v.slice(at + 1);\n  if (domain === 'googlemail.com') domain = 'gmail.com';\n  if (domain === 'gmail.com') local = local.replace(/\\./g, '');\n  return `${local}@${domain}`;\n}\n\nconst nowMs = Date.now();\n// At least 5 minutes: a slot can never expire (and be deleted by the TTL policy) while the request that\n// holds it is still running or releasing it.\nconst grace = num(S.retentionGraceSeconds, 300, 7 * 86400, 3600);\nconst hash = (kind, value) => sha256Hex(`${S.salt}|${kind}|${value}`).slice(0, 24);\n\nconst ip = sourceIp();\n// ORDER MATTERS. Narrow checks (this source, this email) are claimed first and the global flood cap LAST, so a\n// submission refused by a narrow limit never touches global capacity. If a later check refuses, the slots\n// already held are released again ('Plan release'), so a refusal costs nobody anything.\nconst defs = [];\nif (S.checks?.ip?.enabled !== false) {\n  defs.push(ip ? { kind: 'ip', key: hash('ip', ip), cfg: S.checks.ip } : { kind: 'unknown', key: 'all', cfg: S.checks.unknownIp });\n}\nif (S.checks?.email?.enabled !== false) defs.push({ kind: 'email', key: hash('email', normEmail(email)), cfg: S.checks.email });\nif (S.checks?.global?.enabled !== false) defs.push({ kind: 'global', key: 'all', cfg: S.checks.global });\n\nlet executionId = '';\ntry {\n  executionId = String($execution.id ?? '');\n} catch {\n  /* not available */\n}\n// Identifies THIS submission's claims. Stored in every slot it creates; a release only deletes a slot whose\n// stored claimId matches, so one submission can never give back another's slot.\nconst claimId = sha256Hex(`${S.salt}|claim|${nowMs}|${executionId}|${Math.random()}|${Math.random()}`).slice(0, 32);\n\nconst checks = defs.map(({ kind, key, cfg }) => {\n  const limit = num(cfg?.limit, 1, 20, 3);\n  const windowSeconds = num(cfg?.windowSeconds, 10, 86400, 3600);\n  const windowId = Math.floor(nowMs / 1000 / windowSeconds);\n  return { kind, key, limit, windowSeconds, windowId, expireAt: new Date((windowId + 1) * windowSeconds * 1000 + grace * 1000).toISOString() };\n});\n\nreturn [\n  {\n    json: {\n      rl: {\n        checks,\n        idx: 0,\n        slot: 1,\n        errors: 0,\n        nowIso: new Date(nowMs).toISOString(),\n        failMode: S.failMode === 'open' ? 'open' : 'closed',\n        messages: S.messages,\n        sourceKnown: ip !== null,\n        degraded: false,\n        claimId,\n        held: [],\n      },\n    },\n  },\n];\n"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -576,7 +577,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// n8n Code node \"Plan claim\"  (mode: Run Once for All Items)\n//\n// Builds the one Firestore document this attempt will try to create: slot `rl.slot` of check `rl.idx`.\n// The document name is deterministic (kind, hashed source, window, slot), so \"create\" fails exactly\n// when another submission already holds that slot. Only hashes and timestamps are stored.\nconst rl = $input.first().json.rl;\nconst c = rl.checks[rl.idx];\nreturn [\n  {\n    json: {\n      rl,\n      docId: `rl_${c.kind}_${c.key}_${c.windowId}_${rl.slot}`,\n      kind: c.kind,\n      slot: rl.slot,\n      createdAt: rl.nowIso,\n      expireAt: c.expireAt,\n    },\n  },\n];\n"
+        "jsCode": "// n8n Code node \"Plan claim\"  (mode: Run Once for All Items)\n//\n// Builds the one Firestore document this attempt will try to create: slot `rl.slot` of check `rl.idx`.\n// The document name is deterministic (kind, hashed source, window, slot), so \"create\" fails exactly\n// when another submission already holds that slot. Only hashes and timestamps are stored.\nconst rl = $input.first().json.rl;\nconst c = rl.checks[rl.idx];\nreturn [\n  {\n    json: {\n      rl,\n      docId: `rl_${c.kind}_${c.key}_${c.windowId}_${rl.slot}`,\n      kind: c.kind,\n      slot: rl.slot,\n      createdAt: rl.nowIso,\n      expireAt: c.expireAt,\n      claimId: rl.claimId,\n    },\n  },\n];\n"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -594,7 +595,7 @@
         "projectId": "ai-support-desk-9c4ed",
         "collection": "rate_limits",
         "documentId": "={{ $json.docId }}",
-        "columns": "kind,slot,createdAt,expireAt"
+        "columns": "kind,slot,createdAt,expireAt,claimId"
       },
       "type": "n8n-nodes-base.googleFirebaseCloudFirestore",
       "typeVersion": 1.1,
@@ -613,7 +614,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// n8n Code node \"Evaluate claim\"  (mode: Run Once for All Items)\n//\n// Receives the result of \"Claim slot\": the success output (the slot was created) or the error output.\n//   created                      -> next check, or ALLOWED when every check has a slot\n//   error \"already exists\"       -> that slot is held by another submission: try the next slot, or\n//                                   LIMITED once all `limit` slots are taken\n//   any other error              -> retried twice immediately (a single blip must not reject a genuine\n//                                   visitor); if it persists the limiter store is unavailable:\n//                                   'unavailable' (failMode closed) or ALLOWED with degraded=true (open)\n// Output: { route: 'next' | 'allowed' | 'limited' | 'unavailable', rl, formSubmittedText?, ... }\nconst planned = $('Plan claim').last().json;\nconst rl = { ...planned.rl };\nconst input = $input.first().json ?? {};\nconst check = rl.checks[rl.idx];\n\nconst done = (route, extra = {}) => [{ json: { route, rl, ...extra } }];\nconst text = (k) => rl.messages[k];\n\nif (input.error === undefined) {\n  // Slot claimed. Move on to the next check, starting at its first slot.\n  if (rl.idx + 1 >= rl.checks.length) return done('allowed', { formSubmittedText: text('received') });\n  rl.idx += 1;\n  rl.slot = 1;\n  return done('next');\n}\n\nconst e = input.error;\nconst message = typeof e === 'string' ? e : String(e?.message ?? e?.description ?? JSON.stringify(e ?? {}));\nconst httpCode = Number(e && typeof e === 'object' ? (e.httpCode ?? e.statusCode ?? e.code) : NaN);\nconst taken = httpCode === 409 || /already[ _-]?exists/i.test(`${message} ${typeof e === 'object' ? JSON.stringify(e ?? {}) : ''}`);\n\nif (taken) {\n  if (rl.slot >= check.limit) return done('limited', { limitedBy: check.kind, formSubmittedText: text('limited') });\n  rl.slot += 1;\n  return done('next');\n}\n\n// Not \"slot taken\": the limiter store failed. Retry the same slot twice before giving up.\nif ((rl.errors ?? 0) < 2) {\n  rl.errors = (rl.errors ?? 0) + 1;\n  return done('next');\n}\n// Keep this distinguishable from Gemini / Firestore-ticket / email failures: route 'unavailable' / degraded.\nconst failure = message.replace(/\\s+/g, ' ').slice(0, 300);\nif (rl.failMode === 'open') {\n  rl.degraded = true;\n  return done('allowed', { degraded: true, limiterError: failure, formSubmittedText: text('received') });\n}\nreturn done('unavailable', { limiterError: failure, error: failure, formSubmittedText: text('unavailable') });\n"
+        "jsCode": "// n8n Code node \"Evaluate claim\"  (mode: Run Once for All Items)\n//\n// Receives the result of \"Claim slot\": the success output (the slot was created) or the error output.\n//   created                      -> next check, or ALLOWED when every check has a slot\n//   error \"already exists\"       -> that slot is held by another submission: try the next slot, or\n//                                   LIMITED once all `limit` slots are taken\n//   (every created slot is recorded in rl.held; on a refusal 'Plan release' gives them back)\n//   any other error              -> retried twice immediately (a single blip must not reject a genuine\n//                                   visitor); if it persists the limiter store is unavailable:\n//                                   'unavailable' (failMode closed) or ALLOWED with degraded=true (open)\n// Output: { route: 'next' | 'allowed' | 'limited' | 'unavailable', rl, formSubmittedText?, ... }\nconst planned = $('Plan claim').last().json;\nconst rl = { ...planned.rl, held: [...(planned.rl.held ?? [])] };\nconst input = $input.first().json ?? {};\nconst check = rl.checks[rl.idx];\n\nconst done = (route, extra = {}) => [{ json: { route, rl, ...extra } }];\nconst text = (k) => rl.messages[k];\n\nif (input.error === undefined) {\n  // Slot claimed: remember exactly which document this submission now holds, so a refusal further on can give it\n  // back (and only it). Then move on to the next check, starting at its first slot.\n  rl.held.push({ docId: planned.docId, claimId: rl.claimId });\n  rl.errors = 0;\n  if (rl.idx + 1 >= rl.checks.length) return done('allowed', { formSubmittedText: text('received') });\n  rl.idx += 1;\n  rl.slot = 1;\n  return done('next');\n}\n\nconst e = input.error;\nconst message = typeof e === 'string' ? e : String(e?.message ?? e?.description ?? JSON.stringify(e ?? {}));\nconst httpCode = Number(e && typeof e === 'object' ? (e.httpCode ?? e.statusCode ?? e.code) : NaN);\nconst taken = httpCode === 409 || /already[ _-]?exists/i.test(`${message} ${typeof e === 'object' ? JSON.stringify(e ?? {}) : ''}`);\n\nif (taken) {\n  if (rl.slot >= check.limit) return done('limited', { limitedBy: check.kind, formSubmittedText: text('limited') });\n  rl.slot += 1;\n  return done('next');\n}\n\n// Not \"slot taken\": the limiter store failed. Retry the same slot twice before giving up.\nif ((rl.errors ?? 0) < 2) {\n  rl.errors = (rl.errors ?? 0) + 1;\n  return done('next');\n}\n// Keep this distinguishable from Gemini / Firestore-ticket / email failures: route 'unavailable' / degraded.\nconst failure = message.replace(/\\s+/g, ' ').slice(0, 300);\nif (rl.failMode === 'open') {\n  rl.degraded = true;\n  return done('allowed', { degraded: true, limiterError: failure, formSubmittedText: text('received') });\n}\nreturn done('unavailable', { limiterError: failure, error: failure, formSubmittedText: text('unavailable') });\n"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -783,6 +784,402 @@
       ],
       "id": "a1000000-0000-4000-8000-000000000041",
       "name": "Respond to form (unavailable)"
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code node \"Plan release\"  (mode: Run Once for All Items)\n//\n// After a submission was REFUSED (limited, or the limiter store failed) this walks through the slots it\n// holds (rl.held, recorded by 'Evaluate claim') one at a time and gives them back, so a refused\n// submission never keeps capacity (in particular global capacity) that it is not using.\n//\n// Each pass outputs the next slot to give back (route 'release') or route 'release_done'. State travels in\n// `rel`. A release that fails is counted, never retried and never blocks anything: a slot that is NOT given\n// back just stays taken until its window ends, which is the safe direction (stricter, never a bypass).\nlet prev = null;\ntry {\n  if ($('Plan release').isExecuted === true) prev = $('Plan release').last().json;\n} catch {\n  prev = null;\n}\nconst input = $input.first().json ?? {};\n\nlet rel;\nif (prev && prev.rel) {\n  // The previous pass is finished; its outcome is what arrived here:\n  //   { success: true }  the delete ran (the slot was ours)    { error }  the delete failed\n  //   { owned: false }   'Check owner' found the slot was not ours, so nothing was deleted\n  const failed = input.error !== undefined ? 1 : 0;\n  rel = {\n    ...prev.rel,\n    i: prev.rel.i + 1,\n    failed: prev.rel.failed + failed,\n    released: prev.rel.released + (!failed && input.success === true ? 1 : 0),\n    skipped: prev.rel.skipped + (input.owned === false ? 1 : 0),\n  };\n} else {\n  const e = $('Evaluate claim').last().json;\n  rel = { held: (e.rl.held ?? []).slice(), i: 0, failed: 0, skipped: 0, released: 0, route: e.route, carry: { error: e.error, limiterError: e.limiterError } };\n}\n\nif (rel.i >= rel.held.length) {\n  return [{ json: { route: 'release_done', finalRoute: rel.route, rel, ...rel.carry } }];\n}\nconst h = rel.held[rel.i];\nreturn [{ json: { route: 'release', docId: h.docId, claimId: h.claimId, finalRoute: rel.route, rel } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1300,
+        1500
+      ],
+      "id": "a1000000-0000-4000-8000-000000000042",
+      "name": "Plan release"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 4
+          },
+          "conditions": [
+            {
+              "id": "b1000000-0000-4000-8000-000000000043",
+              "leftValue": "={{ $json.route }}",
+              "rightValue": "release",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.4,
+      "position": [
+        1520,
+        1500
+      ],
+      "id": "a1000000-0000-4000-8000-000000000043",
+      "name": "Release pending?"
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "get",
+        "projectId": "ai-support-desk-9c4ed",
+        "collection": "rate_limits",
+        "documentId": "={{ $json.docId }}"
+      },
+      "type": "n8n-nodes-base.googleFirebaseCloudFirestore",
+      "typeVersion": 1.1,
+      "position": [
+        1740,
+        1380
+      ],
+      "id": "a1000000-0000-4000-8000-000000000044",
+      "name": "Read claim",
+      "credentials": {
+        "googleApi": {
+          "name": "Google Service Account account"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code node \"Check owner\"  (mode: Run Once for All Items)\n//\n// Receives what 'Read claim' found at the slot we are about to give back. The slot is deleted ONLY when it\n// exists and its stored claimId equals this submission's claimId. A missing document, an error, or a\n// different claimId means \"not ours (any more)\": leave it alone. Firestore's delete does not complain about\n// a missing document and has no ownership check, so this check is what stops one submission from releasing\n// another's slot.\nconst want = $('Plan release').last().json;\nconst got = $input.first().json ?? {};\nconst owned = got.error === undefined && typeof got.claimId === 'string' && got.claimId.length > 0 && got.claimId === want.claimId;\nreturn [{ json: { owned, docId: want.docId } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1960,
+        1380
+      ],
+      "id": "a1000000-0000-4000-8000-000000000045",
+      "name": "Check owner"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 4
+          },
+          "conditions": [
+            {
+              "id": "b1000000-0000-4000-8000-000000000046",
+              "leftValue": "={{ $json.owned }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "name": "filter.operator.true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.4,
+      "position": [
+        2180,
+        1380
+      ],
+      "id": "a1000000-0000-4000-8000-000000000046",
+      "name": "Owned?"
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "delete",
+        "projectId": "ai-support-desk-9c4ed",
+        "collection": "rate_limits",
+        "documentId": "={{ $('Plan release').last().json.docId }}"
+      },
+      "type": "n8n-nodes-base.googleFirebaseCloudFirestore",
+      "typeVersion": 1.1,
+      "position": [
+        2400,
+        1300
+      ],
+      "id": "a1000000-0000-4000-8000-000000000047",
+      "name": "Release slot",
+      "credentials": {
+        "googleApi": {
+          "name": "Google Service Account account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 4
+          },
+          "conditions": [
+            {
+              "id": "b1000000-0000-4000-8000-000000000048",
+              "leftValue": "={{ $json.finalRoute }}",
+              "rightValue": "unavailable",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.4,
+      "position": [
+        1740,
+        1660
+      ],
+      "id": "a1000000-0000-4000-8000-000000000048",
+      "name": "Needs rescue?"
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code node \"Plan rescue slot\"  (mode: Run Once for All Items)\n//\n// Protects the staff inbox when the limiter store is down. Only reached for submissions the limiter REFUSED\n// because its store failed (the visitor was told to try again). Per time window there are `maxEmails`\n// \"send\" slots, then ONE \"notice\" slot, then nothing, so an outage can produce at most maxEmails + 1 emails\n// per window however many submissions arrive. Slots are claimed with the same atomic create-if-absent\n// pattern as the limiter, so concurrent submissions cannot send more than that.\n// This only affects refused submissions. Rescue emails for ACCEPTED submissions that could not be saved\n// or acknowledged never pass through here.\n// First pass: the input is the finished release step. Later passes: 'Evaluate rescue slot' passes the updated state in `rs`.\nconst prev = $input.first().json ?? {};\n\nlet rs;\nif (prev && prev.rs) {\n  rs = prev.rs;\n} else {\n  const S = $('Rate limit settings').first().json.settings;\n  const r = $('Plan release').last().json;\n  const num = (v, lo, hi, d) => (Number.isFinite(Number(v)) ? Math.min(hi, Math.max(lo, Math.floor(Number(v)))) : d);\n  const maxEmails = num(S.rescue?.maxEmails, 1, 10, 3);\n  const windowSeconds = num(S.rescue?.windowSeconds, 60, 86400, 3600);\n  const retention = num(S.rescue?.heldRetentionSeconds, 3600, 365 * 86400, 30 * 86400);\n  const nowMs = Date.now();\n  const windowId = Math.floor(nowMs / 1000 / windowSeconds);\n  let executionId = '';\n  try {\n    executionId = String($execution.id ?? '');\n  } catch {\n    /* not available */\n  }\n  rs = {\n    slot: 1,\n    errors: 0,\n    maxEmails,\n    windowId,\n    windowEnd: (windowId + 1) * windowSeconds * 1000,\n    expireAt: new Date((windowId + 1) * windowSeconds * 1000 + 3600 * 1000).toISOString(),\n    heldExpireAt: new Date(nowMs + retention * 1000).toISOString(),\n    createdAt: new Date(nowMs).toISOString(),\n    executionId,\n    carry: { error: r.error, limiterError: r.limiterError },\n  };\n}\nreturn [\n  {\n    json: {\n      rs,\n      docId: `rs_limiter_${rs.windowId}_${rs.slot}`,\n      kind: 'rescue_limiter',\n      slot: rs.slot,\n      createdAt: rs.createdAt,\n      expireAt: rs.expireAt,\n    },\n  },\n];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1300,
+        1920
+      ],
+      "id": "a1000000-0000-4000-8000-000000000049",
+      "name": "Plan rescue slot"
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "create",
+        "projectId": "ai-support-desk-9c4ed",
+        "collection": "rate_limits",
+        "documentId": "={{ $json.docId }}",
+        "columns": "kind,slot,createdAt,expireAt"
+      },
+      "type": "n8n-nodes-base.googleFirebaseCloudFirestore",
+      "typeVersion": 1.1,
+      "position": [
+        1520,
+        1920
+      ],
+      "id": "a1000000-0000-4000-8000-00000000004a",
+      "name": "Claim rescue slot",
+      "credentials": {
+        "googleApi": {
+          "name": "Google Service Account account"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code node \"Evaluate rescue slot\"  (mode: Run Once for All Items)\n//\n// Result of 'Claim rescue slot' (success output or error output).\n//   created, slot <= maxEmails   -> rescue 'send'    (a full rescue email, as before)\n//   created, slot == maxEmails+1 -> rescue 'notice'  (ONE short \"more are being held\" email, no customer data)\n//   already exists               -> next slot; past the notice slot -> rescue 'suppress'\n//   other error                  -> retried twice. If the throttle store is down (typically the same outage that\n//                                   triggered the rescue) the cap falls back to a per-instance counter in the\n//                                   workflow's static data: same limits, but NOT atomic across simultaneous\n//                                   executions, so a burst can slightly overshoot. If even that is unavailable\n//                                   the email is sent (never lose the notification of an outage), rescue 'send'\n//                                   with degraded=true.\n// Output route is 'next' (try the next slot) or 'unavailable' (the original refusal route, so\n// 'Prepare rescue email' and the rest behave exactly as before) plus `rescue`.\nconst planned = $('Plan rescue slot').last().json;\nconst rs = { ...planned.rs };\nconst input = $input.first().json ?? {};\nconst carry = rs.carry ?? {};\n\n// 'executionId' and a suppressed/failed record are written by 'Record held submission'.\nconst finish = (rescue, extra = {}) => [\n  {\n    json: {\n      route: 'unavailable',\n      rescue,\n      error: carry.error,\n      limiterError: carry.limiterError,\n      held: {\n        docId: `held_${rs.executionId || 'unknown'}_${rs.windowId}`,\n        kind: 'rate_limit_unavailable',\n        reason: 'suppressed',\n        executionId: rs.executionId,\n        createdAt: rs.createdAt,\n        expireAt: rs.heldExpireAt,\n      },\n      ...extra,\n    },\n  },\n];\n\nif (input.error === undefined) {\n  if (planned.slot <= rs.maxEmails) return finish('send');\n  return finish('notice');\n}\n\nconst e = input.error;\nconst message = typeof e === 'string' ? e : String(e?.message ?? e?.description ?? JSON.stringify(e ?? {}));\nconst httpCode = Number(e && typeof e === 'object' ? (e.httpCode ?? e.statusCode ?? e.code) : NaN);\nconst taken = httpCode === 409 || /already[ _-]?exists/i.test(`${message} ${typeof e === 'object' ? JSON.stringify(e ?? {}) : ''}`);\n\nif (taken) {\n  if (planned.slot > rs.maxEmails) return finish('suppress'); // the notice slot is taken too: nothing more to send\n  rs.slot = planned.slot + 1;\n  rs.errors = 0;\n  return [{ json: { route: 'next', rs } }];\n}\n\nif ((rs.errors ?? 0) < 2) {\n  rs.errors = (rs.errors ?? 0) + 1;\n  return [{ json: { route: 'next', rs } }];\n}\n\n// The throttle store itself is failing: fall back to a local counter (best effort, see above).\ntry {\n  const sd = $getWorkflowStaticData('global');\n  const f = sd.rescueFallback && sd.rescueFallback.windowId === rs.windowId ? sd.rescueFallback : { windowId: rs.windowId, count: 0 };\n  f.count += 1;\n  sd.rescueFallback = f;\n  if (f.count <= rs.maxEmails) return finish('send', { degraded: true });\n  if (f.count === rs.maxEmails + 1) return finish('notice', { degraded: true });\n  return finish('suppress', { degraded: true });\n} catch {\n  return finish('send', { degraded: true });\n}\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1740,
+        1920
+      ],
+      "id": "a1000000-0000-4000-8000-00000000004b",
+      "name": "Evaluate rescue slot"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 4
+          },
+          "conditions": [
+            {
+              "id": "b1000000-0000-4000-8000-00000000004c",
+              "leftValue": "={{ $json.route }}",
+              "rightValue": "next",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.4,
+      "position": [
+        1960,
+        1920
+      ],
+      "id": "a1000000-0000-4000-8000-00000000004c",
+      "name": "Rescue next slot?"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 4
+          },
+          "conditions": [
+            {
+              "id": "b1000000-0000-4000-8000-00000000004d",
+              "leftValue": "={{ $json.rescue }}",
+              "rightValue": "suppress",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.4,
+      "position": [
+        2180,
+        1920
+      ],
+      "id": "a1000000-0000-4000-8000-00000000004d",
+      "name": "Rescue suppressed?"
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code node \"Build held record\"  (mode: Run Once for All Items)\n//\n// A submission whose rescue email was suppressed by the cap. Flattens the record that 'Evaluate rescue slot' prepared\n// so 'Record held submission' can store it. Identifiers only (kind, n8n execution id, time): no name, email or message.\n// The submission itself stays in that n8n execution's data.\nconst h = $input.first().json.held;\nreturn [{ json: { docId: h.docId, kind: h.kind, reason: h.reason, executionId: h.executionId, createdAt: h.createdAt, expireAt: h.expireAt } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2400,
+        1820
+      ],
+      "id": "a1000000-0000-4000-8000-00000000004e",
+      "name": "Build held record"
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "create",
+        "projectId": "ai-support-desk-9c4ed",
+        "collection": "rate_limits",
+        "documentId": "={{ $json.docId }}",
+        "columns": "kind,reason,executionId,createdAt,expireAt"
+      },
+      "type": "n8n-nodes-base.googleFirebaseCloudFirestore",
+      "typeVersion": 1.1,
+      "position": [
+        2620,
+        1820
+      ],
+      "id": "a1000000-0000-4000-8000-00000000004f",
+      "name": "Record held submission",
+      "credentials": {
+        "googleApi": {
+          "name": "Google Service Account account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code node \"Rescue email failed\"  (mode: Run Once for All Items)\n//\n// 'Send rescue email' failed even after its retries. That must never be silent. This builds a record for\n// 'Record failed notification' (identifiers only: kind, n8n execution id, time; no name, email or message) and the\n// error text for the 'Rescue email not sent' node, which marks this execution as FAILED so it shows up in n8n's\n// execution list (and in any error workflow you attach). The submission itself is still in this execution's data.\nconst input = $input.first().json ?? {};\nconst prepared = (() => {\n  try {\n    return $('Prepare rescue email').last().json ?? {};\n  } catch {\n    return {};\n  }\n})();\nconst S = $('Rate limit settings').first().json.settings;\nlet executionId = '';\ntry {\n  executionId = String($execution.id ?? '');\n} catch {\n  /* not available */\n}\nconst clean = (v) => String(v ?? '').replace(/[\\u0000-\\u001f\\u007f]+/g, ' ').trim();\nconst reason = clean(typeof input.error === 'string' ? input.error : (input.error?.message ?? input.error?.description ?? 'unknown error')).slice(0, 300);\nconst retention = Number.isFinite(Number(S.rescue?.heldRetentionSeconds)) ? Math.max(3600, Number(S.rescue.heldRetentionSeconds)) : 30 * 86400;\nconst now = Date.now();\nreturn [\n  {\n    json: {\n      // flat, because 'Record failed notification' stores these fields as they are\n      docId: `held_${executionId || 'unknown'}_email_failed`,\n      kind: clean(prepared.kind) || 'unknown',\n      reason: 'email_failed',\n      executionId,\n      createdAt: new Date(now).toISOString(),\n      expireAt: new Date(now + retention * 1000).toISOString(),\n      failureMessage: `Rescue email could not be sent (${clean(prepared.kind) || 'unknown kind'}): ${reason}. The submission is only in the data of n8n execution ${executionId || '(unknown)'}.`,\n    },\n  },\n];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3200,
+        820
+      ],
+      "id": "a1000000-0000-4000-8000-000000000050",
+      "name": "Rescue email failed"
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "create",
+        "projectId": "ai-support-desk-9c4ed",
+        "collection": "rate_limits",
+        "documentId": "={{ $json.docId }}",
+        "columns": "kind,reason,executionId,createdAt,expireAt"
+      },
+      "type": "n8n-nodes-base.googleFirebaseCloudFirestore",
+      "typeVersion": 1.1,
+      "position": [
+        3420,
+        820
+      ],
+      "id": "a1000000-0000-4000-8000-000000000051",
+      "name": "Record failed notification",
+      "credentials": {
+        "googleApi": {
+          "name": "Google Service Account account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "errorType": "errorMessage",
+        "errorMessage": "={{ $('Rescue email failed').last().json.failureMessage }}"
+      },
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [
+        3640,
+        820
+      ],
+      "id": "a1000000-0000-4000-8000-000000000052",
+      "name": "Rescue email not sent"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ formSubmittedText: $json.formSubmittedText }) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        1080,
+        840
+      ],
+      "id": "a1000000-0000-4000-8000-000000000053",
+      "name": "Respond to form (invalid)"
     }
   ],
   "pinData": {},
@@ -1077,7 +1474,7 @@
       "main": [
         [
           {
-            "node": "Respond to form (rejected)",
+            "node": "Respond to form (invalid)",
             "type": "main",
             "index": 0
           }
@@ -1204,7 +1601,230 @@
       "main": [
         [
           {
+            "node": "Plan release",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respond to form (rejected)": {
+      "main": [
+        [
+          {
+            "node": "Plan release",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Plan release": {
+      "main": [
+        [
+          {
+            "node": "Release pending?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Release pending?": {
+      "main": [
+        [
+          {
+            "node": "Read claim",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Needs rescue?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read claim": {
+      "main": [
+        [
+          {
+            "node": "Check owner",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check owner": {
+      "main": [
+        [
+          {
+            "node": "Owned?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Owned?": {
+      "main": [
+        [
+          {
+            "node": "Release slot",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Plan release",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Release slot": {
+      "main": [
+        [
+          {
+            "node": "Plan release",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Needs rescue?": {
+      "main": [
+        [
+          {
+            "node": "Plan rescue slot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Plan rescue slot": {
+      "main": [
+        [
+          {
+            "node": "Claim rescue slot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claim rescue slot": {
+      "main": [
+        [
+          {
+            "node": "Evaluate rescue slot",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Evaluate rescue slot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate rescue slot": {
+      "main": [
+        [
+          {
+            "node": "Rescue next slot?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rescue next slot?": {
+      "main": [
+        [
+          {
+            "node": "Plan rescue slot",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Rescue suppressed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rescue suppressed?": {
+      "main": [
+        [
+          {
+            "node": "Build held record",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
             "node": "Prepare rescue email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build held record": {
+      "main": [
+        [
+          {
+            "node": "Record held submission",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send rescue email": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Rescue email failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rescue email failed": {
+      "main": [
+        [
+          {
+            "node": "Record failed notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record failed notification": {
+      "main": [
+        [
+          {
+            "node": "Rescue email not sent",
             "type": "main",
             "index": 0
           }

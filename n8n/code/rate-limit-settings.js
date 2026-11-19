@@ -4,6 +4,9 @@
 // nothing else in the workflow needs to change. Values outside the bounds below are clamped
 // by 'Prepare rate limit' (limit 1-20 per window, window 10 s - 24 h).
 //
+// Claim ORDER (not configurable): narrow checks first (IP, then email), the global flood cap LAST. A refused
+// submission gives back every slot it took, so rejections never use up anyone's capacity (see docs).
+//
 // How a limit works: each submission must CLAIM one numbered slot (1..limit) for its source in
 // the current fixed time window. A slot is a Firestore document created with "create", which
 // fails if it already exists, so two simultaneous submissions can never both get the same slot
@@ -43,6 +46,12 @@ const SETTINGS = {
     // support requests an hour.
     email: { enabled: true, limit: 3, windowSeconds: 3600 },
   },
+
+  // Protection for the staff inbox when the limiter store is down (fail-closed refusals each want a rescue
+  // email). Per window, at most `maxEmails` detailed rescue emails are sent, then ONE short notice that more
+  // are being held, then nothing. Applies ONLY to refused submissions (the visitor was told to try again);
+  // rescue emails for tickets that were accepted but not saved are never throttled. Windows align to the clock.
+  rescue: { maxEmails: 3, windowSeconds: 3600, heldRetentionSeconds: 2592000 },
 
   // Stored limiter documents get an `expireAt` this long after their window ends. Enable a Firestore TTL
   // policy on collection group `rate_limits`, field `expireAt`, so they are deleted automatically.

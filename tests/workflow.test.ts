@@ -238,8 +238,8 @@ test("dashboard rule: only Low/Medium without contradicting flags is automatic; 
 test("graph: single linear path, ONE Firestore create, no upsert, every connection resolves", () => {
   const creates = nodes.filter((n) => n.type.includes("Firestore") && n.parameters.operation === "create");
   const upserts = nodes.filter((n) => n.parameters.operation === "upsert");
-  // One ticket create (support_tickets) plus the rate limiter's slot claim (rate_limits, tiny hashed documents).
-  assert.deepEqual(creates.map((n) => `${n.name}:${n.parameters.collection}`).sort(), ["Claim slot:rate_limits", "Create a document:support_tickets"]);
+  // One ticket create (support_tickets) plus the rate limiter's own tiny documents in rate_limits: slot claims, the rescue-email throttle and held-submission records.
+  assert.deepEqual(creates.map((n) => `${n.name}:${n.parameters.collection}`).sort(), ["Claim rescue slot:rate_limits", "Claim slot:rate_limits", "Create a document:support_tickets", "Record failed notification:rate_limits", "Record held submission:rate_limits"]);
   assert.equal(upserts.length, 0);
   const names = new Set(nodes.map((n) => n.name));
   for (const [from, c] of Object.entries<any>(wf.connections)) {
@@ -254,6 +254,7 @@ test("graph: single linear path, ONE Firestore create, no upsert, every connecti
     "Claim granted?",
     "Claim next slot?",
     "Claim refused?",
+    "Claim rescue slot",
     "Claim slot",
     "Create a document",
     "If",
@@ -261,8 +262,13 @@ test("graph: single linear path, ONE Firestore create, no upsert, every connecti
     "Is our own earlier attempt",
     "Is submission valid",
     "Is write conflict",
+    "Owned?",
+    "Release pending?",
+    "Rescue next slot?",
+    "Rescue suppressed?",
     "Send a message",
     "Send a message1",
+    "Send rescue email",
   ]);
   assert.deepEqual(wf.connections.If.main.map((b: any[]) => b[0].node), ["Send a message", "Send a message1"]);
   assert.equal(wf.active, false, "must not auto-activate on import");
@@ -385,8 +391,8 @@ test("graph: nothing that calls Gemini, Firestore or Gmail is reachable except t
   assert.deepEqual(gate, [["Prepare rate limit"], ["Rejected submission (stop)"]]);
   // The rejected branch only answers the visitor (Reply -> Respond) and ends.
   assert.deepEqual(wf.connections["Rejected submission (stop)"].main[0].map((c: any) => c.node), ["Reply: invalid"]);
-  assert.deepEqual(wf.connections["Reply: invalid"].main[0].map((c: any) => c.node), ["Respond to form (rejected)"]);
-  assert.equal(wf.connections["Respond to form (rejected)"], undefined, "the rejected branch ends there");
+  assert.deepEqual(wf.connections["Reply: invalid"].main[0].map((c: any) => c.node), ["Respond to form (invalid)"]);
+  assert.equal(wf.connections["Respond to form (invalid)"], undefined, "the invalid branch ends there");
   // Reachable from the rejected branch: nothing.
   const external = (n: Node) => /gemini|firestore|gmail/i.test(n.type);
   const reach = (start: string) => {

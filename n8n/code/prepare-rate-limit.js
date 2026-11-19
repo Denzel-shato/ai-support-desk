@@ -101,16 +101,31 @@ function normEmail(e) {
 }
 
 const nowMs = Date.now();
-const grace = num(S.retentionGraceSeconds, 0, 7 * 86400, 3600);
+// At least 5 minutes: a slot can never expire (and be deleted by the TTL policy) while the request that
+// holds it is still running or releasing it.
+const grace = num(S.retentionGraceSeconds, 300, 7 * 86400, 3600);
 const hash = (kind, value) => sha256Hex(`${S.salt}|${kind}|${value}`).slice(0, 24);
 
 const ip = sourceIp();
+// ORDER MATTERS. Narrow checks (this source, this email) are claimed first and the global flood cap LAST, so a
+// submission refused by a narrow limit never touches global capacity. If a later check refuses, the slots
+// already held are released again ('Plan release'), so a refusal costs nobody anything.
 const defs = [];
-if (S.checks?.global?.enabled !== false) defs.push({ kind: 'global', key: 'all', cfg: S.checks.global });
 if (S.checks?.ip?.enabled !== false) {
   defs.push(ip ? { kind: 'ip', key: hash('ip', ip), cfg: S.checks.ip } : { kind: 'unknown', key: 'all', cfg: S.checks.unknownIp });
 }
 if (S.checks?.email?.enabled !== false) defs.push({ kind: 'email', key: hash('email', normEmail(email)), cfg: S.checks.email });
+if (S.checks?.global?.enabled !== false) defs.push({ kind: 'global', key: 'all', cfg: S.checks.global });
+
+let executionId = '';
+try {
+  executionId = String($execution.id ?? '');
+} catch {
+  /* not available */
+}
+// Identifies THIS submission's claims. Stored in every slot it creates; a release only deletes a slot whose
+// stored claimId matches, so one submission can never give back another's slot.
+const claimId = sha256Hex(`${S.salt}|claim|${nowMs}|${executionId}|${Math.random()}|${Math.random()}`).slice(0, 32);
 
 const checks = defs.map(({ kind, key, cfg }) => {
   const limit = num(cfg?.limit, 1, 20, 3);
@@ -132,6 +147,8 @@ return [
         messages: S.messages,
         sourceKnown: ip !== null,
         degraded: false,
+        claimId,
+        held: [],
       },
     },
   },

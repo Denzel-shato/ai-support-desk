@@ -11,6 +11,8 @@
 //   acknowledgement_failed  ticket saved; the customer's acknowledgement email failed
 //   escalation_failed       ticket saved; the staff escalation email failed
 //   rate_limit_unavailable  the spam-protection store failed (fail-closed): the submission was refused, no ticket
+//   rate_limit_suppressed   the notice sent ONCE per window when the cap on rate_limit_unavailable emails is reached
+//                           (contains no customer data)
 const esc = (v) =>
   String(v ?? '')
     .replace(/&/g, '&amp;')
@@ -41,7 +43,8 @@ try {
 const input = $input.first().json ?? {};
 
 let kind;
-if (input.route === 'unavailable') kind = 'rate_limit_unavailable';
+if (input.route === 'unavailable' && input.rescue === 'notice') kind = 'rate_limit_suppressed';
+else if (input.route === 'unavailable') kind = 'rate_limit_unavailable';
 else if (input.route === 'unclear') kind = 'ticket_unclear';
 else if (input.kind === 'failure') kind = 'ticket_not_saved';
 else if (ran('Send a message1')) kind = 'acknowledgement_failed';
@@ -49,6 +52,11 @@ else if (ran('Send a message')) kind = 'escalation_failed';
 else kind = 'ticket_not_saved';
 
 const TEXT = {
+  rate_limit_suppressed: {
+    label: 'Spam check still unavailable: further emails held',
+    what: 'The rate limiter is still failing, so further submissions are being refused (each visitor is told to try again later). To protect this inbox, no more individual emails will be sent about them in this time window.',
+    todo: 'Fix access to the Firestore rate_limits collection. Refused submissions are listed as n8n executions (route "unavailable") and, when Firestore allows, as held_* documents in rate_limits.',
+  },
   rate_limit_unavailable: {
     label: 'Spam check unavailable: request held',
     what: 'The rate limiter could not reach Firestore, so this submission was refused to avoid bypassing spam protection. No ticket was created and nothing was sent to the customer. The visitor was told to try again later.',
@@ -97,14 +105,14 @@ const html =
   `<p style="margin:0 0 8px;">${esc(TEXT.what)}</p>` +
   `<p style="margin:0 0 16px;"><strong>${esc(TEXT.todo)}</strong></p>` +
   `<table style="border-collapse:collapse; font-size:14px;">` +
-  row('Customer', clean(t.customerName)) +
-  row('Email', clean(t.customerEmail)) +
-  row('Message', String(t.message ?? ''), true) +
+  (kind === 'rate_limit_suppressed'
+    ? ''
+    : row('Customer', clean(t.customerName)) + row('Email', clean(t.customerEmail)) + row('Message', String(t.message ?? ''), true)) +
   (t.ticketId ? row('Ticket ID', clean(t.ticketId)) + row('Priority', clean(t.priority) || 'Unknown') : '') +
   (failure ? row('Error', failure) : '') +
   (executionId ? row('n8n execution', executionId) : '') +
   `</table>` +
   `<p style="margin-top:20px; font-size:11px; color:#9a9086;">Generated automatically by the AI Support Desk</p></div>`;
 
-const subject = `⚠️ ${TEXT.label} — ${clean(t.customerName).slice(0, 80)}`;
+const subject = kind === 'rate_limit_suppressed' ? `⚠️ ${TEXT.label}` : `⚠️ ${TEXT.label} — ${clean(t.customerName).slice(0, 80)}`;
 return [{ json: { kind, subject, html } }];

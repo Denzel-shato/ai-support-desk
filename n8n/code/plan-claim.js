@@ -14,6 +14,7 @@ return [
       slot: rl.slot,
       createdAt: rl.nowIso,
       expireAt: c.expireAt,
+      claimId: rl.claimId,
     },
   },
 ];

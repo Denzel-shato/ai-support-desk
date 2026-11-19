@@ -332,11 +332,13 @@ test("Gemini, ticket creation and customer/staff emails are only reachable throu
   assert.deepEqual(targets("Respond to form (accepted)"), ["Message a model"]);
   // The limited path answers the visitor and ends: nothing else runs.
   assert.deepEqual(targets("Claim refused?", 0), ["Respond to form (rejected)"]);
-  assert.deepEqual(targets("Respond to form (rejected)"), []);
+  // ...then gives back the slots it holds (rate_limits only); the 'limited' result never reaches the rescue path at run time.
+  assert.deepEqual(targets("Respond to form (rejected)"), ["Plan release"]);
   // The only email on the unavailable path is the staff rescue email.
   const unavailable = [...reach("Respond to form (unavailable)")].filter(external);
   assert.deepEqual(unavailable, ["Send rescue email"]);
   assert.equal(reach("Respond to form (rejected)").has("Create a document"), false);
+  assert.equal(reach("Respond to form (rejected)").has("Message a model"), false);
 });
 
 test("the form uses Form Trigger 2.1 with a response node, request headers on, and every early exit answers the visitor", () => {
@@ -346,19 +348,19 @@ test("the form uses Form Trigger 2.1 with a response node, request headers on, a
   assert.equal(f.parameters.responseMode, "responseNode");
   assert.equal(f.parameters.options.showHeaders, true);
   assert.equal(typeof f.parameters.path, "string");
-  for (const respond of ["Respond to form (accepted)", "Respond to form (rejected)", "Respond to form (unavailable)"]) {
+  for (const respond of ["Respond to form (accepted)", "Respond to form (rejected)", "Respond to form (unavailable)", "Respond to form (invalid)"]) {
     const n = byName(respond);
     assert.equal(n.type, "n8n-nodes-base.respondToWebhook");
     // Only the visitor-facing text is returned, never the limiter's internal state.
     assert.equal(n.parameters.responseBody, "={{ JSON.stringify({ formSubmittedText: $json.formSubmittedText }) }}");
   }
   // Every branch that leaves the claim loop or the validity gate ends in a Respond node before anything else.
-  assert.deepEqual(targets("Reply: invalid"), ["Respond to form (rejected)"]);
+  assert.deepEqual(targets("Reply: invalid"), ["Respond to form (invalid)"]);
   assert.deepEqual(targets("Claim refused?", 1), ["Respond to form (unavailable)"]);
 });
 
 test("a rate-limited or invalid request is never mistaken for a ticket: no ticket or email node is reachable from its responder", () => {
-  for (const start of ["Rejected submission (stop)", "Respond to form (rejected)"]) {
+  for (const start of ["Rejected submission (stop)", "Respond to form (invalid)", "Respond to form (rejected)"]) {
     const reached = reach(start);
     for (const n of ["Create a document", "Send a message", "Send a message1", "Message a model", "Message a model1", "Get many documents"]) assert.equal(reached.has(n), false, `${start} -> ${n}`);
   }
@@ -369,7 +371,7 @@ test("the claim store is the only new Firestore use: create-only, its own collec
   assert.equal(c.parameters.operation, "create");
   assert.equal(c.parameters.collection, "rate_limits");
   assert.equal(c.parameters.documentId, "={{ $json.docId }}");
-  assert.equal(c.parameters.columns, "kind,slot,createdAt,expireAt");
+  assert.equal(c.parameters.columns, "kind,slot,createdAt,expireAt,claimId");
   assert.equal(c.onError, "continueErrorOutput");
   assert.equal(c.retryOnFail, undefined, "n8n would retry a 'slot taken' conflict; the loop does its own targeted retries");
   assert.deepEqual(targets("Claim slot", 0), ["Evaluate claim"]);
