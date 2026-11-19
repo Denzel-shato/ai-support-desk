@@ -31,9 +31,10 @@ const article = (o: Record<string, unknown>) => ({ json: { _id: "a", title: "T",
 const model = (obj: unknown) => [{ json: { content: { parts: [{ text: typeof obj === "string" ? obj : JSON.stringify(obj) }] } } }];
 const form = [{ json: { "Your Name": "Ada", "Your Email": "ada@example.com", "What is it you would like us to fix ?": "App crashes" } }];
 const classification = (priority: string) => model({ category: "Bug", reason: "r", sentiment: "Negative", priority, summary: "s" });
-const evaluation = model({ kbStatus: "covered", relevantSection: "Crash", coverageReason: "c", supportedSteps: ["Reinstall"], unsupportedParts: [], escalationRequired: false, customerResponse: "Hello Ada" });
+const KB_ARTICLES = [{ id: "a1", title: "Crash", content: "Reinstall the app from the store.\nClear the app cache before reopening it." }];
+const evaluation = model({ kbStatus: "covered", relevantArticleId: "a1", relevantSection: "Crash", coverageReason: "c", supportedSteps: ["Reinstall the app from the store."], unsupportedParts: [], escalationRequired: false, customerResponse: "Hello Ada" });
 const validated = [{ json: { valid: true, errors: [], ...form[0].json } }];
-const kbOk = [{ json: { articleCount: 2, kbUnavailable: false } }];
+const kbOk = [{ json: { articleCount: 1, kbUnavailable: false, articles: KB_ARTICLES } }];
 const ctx = (priority: string) => ({ nodes: { "Validate submission": validated, "Message a model": classification(priority), "Select active articles": kbOk, "Message a model1": evaluation } });
 // What a Gemini node returns when it fails with "continue on error".
 const geminiError = [{ json: { error: "503 The model is overloaded" } }];
@@ -72,7 +73,8 @@ test("'Build ticket' creates exactly ONE ticket per submission", () => {
   assert.equal(out.length, 1);
   assert.equal(out[0].json.customerEmail, "ada@example.com");
   assert.equal(out[0].json.aiResponse, out[0].json.customerResponse);
-  assert.deepEqual(out[0].json.supportedSteps, ["Reinstall"]);
+  assert.deepEqual(out[0].json.supportedSteps, ["Reinstall the app from the store."]);
+  assert.equal(out[0].json.autoReplyArticleId, "a1");
 });
 
 test("routing fields are decided once: High/Urgent escalate; Low/Medium do not", () => {
@@ -180,7 +182,7 @@ test("lower-case high/urgent are still escalated (the old exact-match routing le
 });
 
 test("knowledge-base coverage overrides Low/Medium automatic handling", () => {
-  const ev = (o: Record<string, unknown>) => model({ kbStatus: "covered", relevantSection: "S", coverageReason: "c", supportedSteps: ["Step"], unsupportedParts: [], escalationRequired: false, customerResponse: "Hello Ada", ...o });
+  const ev = (o: Record<string, unknown>) => model({ kbStatus: "covered", relevantArticleId: "a1", relevantSection: "Crash", coverageReason: "c", supportedSteps: ["Reinstall the app from the store."], unsupportedParts: [], escalationRequired: false, customerResponse: "Hello Ada", ...o });
   // no active articles at all: not_covered, the model's text is thrown away
   const none = build({ "Select active articles": [{ json: { articleCount: 0, kbUnavailable: false } }], "Message a model1": ev({}) });
   assert.equal(none.kbStatus, "not_covered");
@@ -200,9 +202,12 @@ test("knowledge-base coverage overrides Low/Medium automatic handling", () => {
   const auto = build({ "Message a model1": ev({}) });
   assert.equal(auto.escalationStatus, "not_required");
   assert.equal("escalatedAt" in auto, false);
-  assert.equal(auto.customerResponse, "Hello Ada");
-  // partially covered, nothing left to investigate: allowed
-  assert.equal(build({ "Message a model1": ev({ kbStatus: "partially_covered" }) }).escalationStatus, "not_required");
+  assert.match(auto.customerResponse, /^We found guidance in our knowledge base/, "the stored reply is the controlled template, not the model's prose");
+  assert.doesNotMatch(auto.customerResponse, /Hello Ada/);
+  // partially covered now ALWAYS needs a human: only a fully "covered" answer is sent automatically
+  const partial = build({ "Message a model1": ev({ kbStatus: "partially_covered" }) });
+  assert.equal(partial.escalationStatus, "required");
+  assert.equal(partial.groundingIssue, "not_fully_covered");
   // High/Urgent always need a human, even when fully covered
   for (const p of ["High", "Urgent"]) assert.equal(build({ "Message a model": classification(p), "Message a model1": ev({}) }).escalationStatus, "required");
 });
@@ -257,6 +262,7 @@ test("graph: single linear path, ONE Firestore create, no upsert, every connecti
     "Claim rescue slot",
     "Claim slot",
     "Create a document",
+    "Deployment config valid?",
     "If",
     "Is duplicate submission",
     "Is our own earlier attempt",
@@ -384,7 +390,10 @@ test("non-text values (a hand-crafted POST) and control characters in name/email
 });
 
 test("graph: nothing that calls Gemini, Firestore or Gmail is reachable except through the 'valid' branch", () => {
-  assert.deepEqual(wf.connections["Form Trigger"].main[0].map((c: any) => c.node), ["Rate limit settings"]);
+  // Deployment gate first (tests/deployment-config.test.ts covers it in depth): only a valid configuration reaches the rest.
+  assert.deepEqual(wf.connections["Form Trigger"].main[0].map((c: any) => c.node), ["Deployment config"]);
+  assert.deepEqual(wf.connections["Deployment config"].main[0].map((c: any) => c.node), ["Deployment config valid?"]);
+  assert.deepEqual(wf.connections["Deployment config valid?"].main[0].map((c: any) => c.node), ["Rate limit settings"]);
   assert.deepEqual(wf.connections["Rate limit settings"].main[0].map((c: any) => c.node), ["Validate submission"]);
   assert.deepEqual(wf.connections["Validate submission"].main[0].map((c: any) => c.node), ["Is submission valid"]);
   const gate = wf.connections["Is submission valid"].main.map((b: any[]) => b.map((c) => c.node));

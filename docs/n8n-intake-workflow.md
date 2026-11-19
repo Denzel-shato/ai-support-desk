@@ -28,7 +28,7 @@ aggregation, because a Code node in "all items" mode does not preserve n8n's ite
    The proposal sends the acknowledgement to `{{ $json.customerEmail }}` (the stored customer). If you
    still want test mode, put your own address back in that node. **Importing this and activating it will
    email real customers.**
-2. **Escalation recipient** is the placeholder `REPLACE_WITH_ESCALATION_INBOX@example.com`: set it.
+2. **Escalation recipient** is no longer stored in the Gmail nodes. It is set in the `Deployment config` node (placeholder `REPLACE_WITH_ESCALATION_INBOX@example.com`, refused until replaced). See [n8n-deployment-config.md](n8n-deployment-config.md).
 3. **High/Urgent tickets now get `reviewStatus: "awaiting_review"`** at creation (previously the
    escalation branch wrote no `reviewStatus`). Low/Medium still get it as before; the dashboard ignores it for them.
 4. **HTML escaping.** Customer and model text is HTML-escaped once (Prepare email fields) before it is
@@ -93,6 +93,31 @@ tickets, Gemini calls and (Low/Medium) acknowledgement emails. Execution data fo
    is a new public page, so do it only if option 1 isn't enough.
 3. **Cap spend:** set a budget/quota on the Gemini API key so abuse can't run up cost.
 
+## Automatic customer replies: grounding (audit finding B1)
+
+**Threat.** The customer's message, name and address are untrusted. Before this change a Low/Medium ticket was emailed whatever the model wrote whenever the model's own JSON said `covered` and `escalationRequired: false`, so a prompt-injected model could make the company mailbox send attacker-chosen text, links or instructions to any address.
+
+**What now decides whether an automatic email is sent** (deterministic code, not the model):
+
+1. Priority is exactly Low or Medium, no `intakeIssue`, evaluation complete, `kbStatus` is `covered`, `escalationRequired` is false and `unsupportedParts` is empty.
+2. The cited article exists among the **active** articles: by exact `relevantArticleId` (title must agree if given), or by a unique exact title when no ID is given. Unknown, mismatched, ambiguous or non-string references are refused.
+3. Every `supportedSteps` entry is located inside that article (normalised, whole-word, and the step must cover at least half of the matching article sentence/line; 12+ characters). The email uses the **article's sentence**, not the model's wording. Paraphrases, merged steps and invented steps fail.
+4. None of the sentences or the title contains a URL, domain, e-mail address, `@`, Markdown link, control or bidirectional characters. A staff-written article that contains a link therefore always goes to a human.
+5. The email text is a fixed template (`GROUNDING.render`): intro line, `Article: <title>`, numbered article sentences, fixed disclaimer. The greeting uses only a plain Name-Case first name, otherwise just "Hello,". Subject and surrounding text are fixed.
+
+`Prepare email fields` repeats steps 1-5 from the stored ticket and the article text, and sets `escalationStatus: required` if anything fails, so a bug in `Build ticket` still cannot cause an automatic send. The customer email node cannot print `customerResponse` at all.
+
+**On any failure** the ticket is stored with the untouched submission, `escalationRequired: true`, `escalationStatus: required`, `groundingIssue: <code>`, an escalation reason, an empty `supportedSteps`, and the model's prose kept as a draft the agent may edit and send through the unchanged approval/Send Response flow. Codes: `not_fully_covered`, `unsupported_parts_remain`, `article_not_cited`, `article_not_found`, `article_mismatch`, `ambiguous_article`, `unsafe_title`, `no_steps`, `step_not_in_article`, `unsafe_text`.
+
+**Residual risks (not solved).**
+- A model can still be steered into choosing a *different real article* or real steps for the wrong problem. The customer then receives genuine, staff-written guidance that may not fit, and nobody reviews it. Only wording, not relevance, is verified.
+- The recipient address is still unverified: anyone can make the system send a (safe, template) email to a third party. Rate limits bound the volume; email-ownership confirmation would be the real fix.
+- The greeting still contains up to 30 submitter-chosen letters (e.g. "Hello Winner,").
+- Human-reviewed drafts still contain model prose; an agent must read them before approving. The staff escalation email and dashboard show attacker-controlled text (HTML-escaped).
+- An article written by staff is trusted. Anyone who can edit the knowledge base can change what is sent.
+- Prompt injection can still corrupt classification (priority, category) and summaries; a wrongly Low priority only affects whether the grounded template is sent.
+- Verified only by tests that run the Code nodes in Node. The n8n Firestore node's returned types (booleans, arrays) and `$('Select active articles')` access must be confirmed in a real n8n run: the second gate fails closed (everything goes to staff) if they differ.
+
 ## Rate limiting
 
 ### What the Form Trigger gives us (inspected in n8n 2.47.7)
@@ -108,11 +133,11 @@ tickets, Gemini calls and (Low/Medium) acknowledgement emails. Execution data fo
 - **Slot claims in Firestore.** Per check and fixed window there are N slot documents `rl_<kind>_<hashedkey>_<windowId>_<slot>`. A submission creates the
   first free slot with Firestore `create` (atomic, fails with 409 if the document exists). Winning `limit` slots = allowed. Two concurrent submissions
   cannot both take the same slot, so the limit cannot be exceeded by racing (read-then-write counters can).
-- **Checks, in order:** global flood cap, IP (or shared "unknown" bucket), normalised email. Email is never the only check.
+- **Checks, in order (B4):** IP (or shared "unknown" bucket), normalised email, and the global flood cap **last**. Email is never the only check. See "Claim order and release (B4)" below.
 - **Normalised email:** lower-case, `+tag` removed, Gmail/googlemail dots removed. Other domains keep dots.
 - **Outcomes:** granted -> `Respond to form (accepted)` (the unchanged "submitted and is now being processed" text) -> Gemini etc. exactly as before.
   Limited -> polite "several requests, try again later" and the run **ends** (no Gemini, KB, ticket, escalation or customer email). Limiter unavailable -> see below.
-- **All numbers and messages live in `Rate limit settings`** (one node). Values are clamped (limit 1-20, window 10-86400 s).
+- **All numbers and messages live in `Rate limit settings`** (one node); the salt and staff inbox live in `Deployment config`. Values are clamped (limit 1-20, window 10-86400 s).
 
 ### Chosen initial limits (please tune)
 | Check | Limit | Window | Why |
@@ -129,19 +154,45 @@ If the claim store errors (after 2 immediate retries per slot) the visitor is to
 would silently remove abuse protection exactly when Firestore is struggling. Set `failMode: 'open'` to accept instead (marked `degraded`). Limiter failures use a
 separate route/message/rescue kind, so they are distinguishable from Gemini, ticket-save and email failures.
 
+### Claim order and release (B4)
+**Problem:** the global slot used to be claimed first, so a submission later refused by the IP or email limit had already used global capacity; an attacker repeating one email could starve everyone else.
+
+**Algorithm** (`Prepare rate limit`, `Evaluate claim`, `Plan release`, `Read claim`, `Check owner`, `Release slot`):
+1. Each submission gets a random `claimId` (hash of salt, time, execution id and random values). Every slot document it creates stores it.
+2. Checks are claimed narrow first: IP (or unknown bucket), email, then **global last**. Every slot created is recorded in `rl.held`.
+3. If a check refuses (or the store fails), the visitor is answered first, then each held slot is released: **read the slot, delete it only if its stored `claimId` is this submission's**. The Firestore node's delete has no precondition and succeeds on missing documents, so the ownership read is what stops a request from ever releasing another request's slot.
+4. The global slot is claimed last, so a request that wins it is allowed and never needs to release it. A request refused by global releases its IP and email slots.
+5. Claiming is still the atomic Firestore `create`; no check-then-write. Numbers, windows and messages are unchanged; `retentionGraceSeconds` is now clamped to at least 300 s so a slot cannot expire while being released.
+
+**Failure behaviour:** a failed or skipped release (store error, ownership mismatch) leaves the slot taken until its window ends, i.e. stricter, never looser. Store failure mid-way still fails closed (and releases what it can). An ambiguous create (error, then 409 on retry) can leak one unrecorded own slot, also in the safe direction.
+
+**Known trade-offs:** (a) a burst can make a request see "limited" while refused requests still hold narrow slots for a moment (transient over-counting; clears on release/window end); (b) refused requests cost extra Firestore reads/deletes (1 read + 1 delete per held slot, normally 1-2); (c) fixed-window edge effects are unchanged.
+
+### Rescue-email flood protection (B5)
+**Problem:** with the limiter store down and fail-closed, every public submission produced a staff rescue email.
+
+**Algorithm** (`Plan rescue slot`, `Claim rescue slot`, `Evaluate rescue slot`, `Build held record`, `Record held submission`):
+- Applies **only** to `rate_limit_unavailable` rescue emails, i.e. submissions that were refused (the visitor was told to retry). Rescue emails for already accepted tickets (ticket not saved, unclear, acknowledgement or escalation failed) are never throttled.
+- Per window (`rescue` in `Rate limit settings`: `maxEmails` 3, `windowSeconds` 3600, `heldRetentionSeconds` 30 days) the same atomic slot `create` is used (`rs_limiter_<window>_<slot>` in `rate_limits`). Slots 1-3: the normal detailed rescue email. Slot 4: **one** notice email ("rate limiter unavailable, further submissions suppressed", no customer data). Beyond that: no email; a best-effort `held_<executionId>_<window>` document with identifiers only (kind, reason, executionId, createdAt, expireAt; no name, email or message). The n8n execution still holds the submission, so nothing is lost, and the visitor sees the same refusal text as before.
+- If the throttle store fails (2 retries) a per-instance fallback counter in workflow static data applies the same cap (not atomic across simultaneous executions; persisted only for production executions). If neither works the email is **sent** (degraded): losing the outage signal is worse than an extra email.
+- **Email failures are explicit now:** `Send rescue email` has an error output -> `Rescue email failed` -> `Record failed notification` (held document `held_<exec>_email_failed`, no customer data) -> `Rescue email not sent` (Stop and Error, so the execution shows as failed). A failed send does not refund its throttle slot.
+- Residual: execution data (including suppressed submissions' text) is kept only as long as your n8n execution retention; the allowance is per window, so a long outage is announced again each hour; consider an n8n **error workflow** to alert on "Rescue email not sent".
+- Config keys, clamped: `maxEmails` 1-10, `windowSeconds` and `heldRetentionSeconds` bounded. Enable the TTL policy on `rate_limits.expireAt` (covers `rl_`, `rs_limiter_` and `held_` documents).
+
 ### Privacy and retention
-Only salted SHA-256 hashes of IP and email appear in the document id; documents hold `kind, slot, createdAt, expireAt`. Replace the placeholder `salt`.
+Only salted SHA-256 hashes of IP and email appear in the document id; documents hold `kind, slot, createdAt, expireAt`. The salt is set in `Deployment config`, not here; a placeholder or weak salt stops the run (see [n8n-deployment-config.md](n8n-deployment-config.md)).
 Each document expires `window + retentionGraceSeconds` after window end. Correctness never depends on deletion (the window is in the id). Enable a Firestore **TTL
 policy** on collection group `rate_limits`, field `expireAt`, to delete them (deletion is typically within about a day).
 n8n execution data will still contain request headers (including the IP) for as long as your execution retention keeps it.
 
 ### Retries and duplicates
-A legitimate retry after a rejection works once the window rolls over; a rejection claims no email slot, so it does not extend the block. It does consume a
-global and IP slot. A double-click consumes two email slots. The deterministic ticket ID still stops duplicate tickets.
+A legitimate retry after a rejection works once the window rolls over; a rejection claims no email slot, so it does not extend the block, and (B4) a refused submission
+consumes **no global capacity**; its IP slot is given back. A double-click consumes two email slots. The deterministic ticket ID still stops duplicate tickets.
 
 ### Trade-offs
-Fixed windows allow up to ~2x the limit across a boundary. Cost is O(limit) Firestore writes per check. Spam can use up the global bucket (cheap denial of
-service for the form), which is why it is generous. A limiter outage with fail-closed can produce many rescue emails.
+Fixed windows allow up to ~2x the limit across a boundary. Cost is O(limit) Firestore writes per check. Accepted spam can still use up the global bucket (cheap denial of
+service for the form), which is why it is generous; submissions refused by the IP/email limits no longer count towards it. A limiter outage with fail-closed no longer floods the
+inbox (see "Rescue-email flood protection (B5)").
 
 ### What was verified
 - **Node tests (`tests/rate-limit.test.ts`)**: the real Code-node sources with a fake store whose create is atomic: all nine scenarios (within limit, over limit,
@@ -149,14 +200,16 @@ service for the form), which is why it is generous. A limiter outage with fail-c
   IP parsing, normalisation, hashing-only storage, expiry, config clamping, and graph assertions that Gemini/ticket/email nodes are reachable only through a granted claim.
 - **Real n8n 2.47.7 sandbox (own throwaway instance, stubbed Gemini/Firestore/Gmail, real HTTP form posts):** loop wiring, error-output handling, header parsing,
   limited/allowed/unavailable routing (closed and open), window rollover, and that rejected paths create no ticket or email. This is not your n8n.
+- **B4/B5 (`tests/rate-limit-reliability.test.ts`, real Code-node sources + fake atomic store):** IP/email-refused requests do not consume global; global-refused requests give back their slots; 60 random-interleaving trials at the global limit; failures between claims; failed and ownership-mismatched releases; store outages (closed/open); rescue cap, notice, held records, 80 concurrent rescue trials, fallback counter, failed rescue emails, no customer data in notice/held records.
+- **B4/B5 in a throwaway n8n 2.47.7 (stubbed Firestore/Gmail/Gemini, state in workflow static data, real form POSTs):** workflow imports and publishes; 5 posts with one email gave 3 accepted, 2 refused, global/IP/email slots 3/3/3 and the refused requests' IP slots released; limiter down x6 gave 3 detailed rescue emails, 1 notice, 2 held records; Gmail failing ended executions in `error` with a held failure record. The stub store lives in static data, so simultaneous executions overwrite each other: concurrency is NOT evidenced by the sandbox, only by the Node tests.
 - **NOT verified:** real Firestore atomicity and concurrency (taken from the API's documented create semantics, not run), your reverse-proxy headers, the form's look in a
   real browser (only HTTP responses were checked), live Gemini/Gmail, TTL deletion, and the public URL change (v2.1 serves `/form/support-request` once n8n assigns a webhookId on import).
 
 ### Manual steps
-1. Set a real random `salt` in `Rate limit settings`.
+1. Set a real random salt (and the staff inbox) in `Deployment config`, following [n8n-deployment-config.md](n8n-deployment-config.md).
 2. Confirm your proxy sets `X-Forwarded-For` (or switch `ipSource.header`, e.g. `cf-connecting-ip`, hops 1) and that clients cannot inject the last entry.
 3. Create the Firestore TTL policy on `rate_limits.expireAt`; the service account used by n8n needs create rights (it bypasses rules; the dashboard doesn't use this collection).
-4. Set the staff inbox on the rescue email node as for escalations; confirm the credential on `Claim slot`.
+4. The rescue email uses the same inbox as escalations (from `Deployment config`); confirm the credential on `Claim slot`.
 5. Import into a **test** n8n and Firestore project, submit from a real browser, check the three messages render, then exceed each limit and test a simultaneous burst.
 
 ## Reliability layer (retries, duplicates, rescue emails)
@@ -174,8 +227,8 @@ Send Response workflow are unchanged. High/Urgent tickets still go to staff only
 | Rescue email | Escaped submission (name, email, message), ticket ID, priority, shortened error text (max 300 chars), n8n execution ID, and what to do. Subject says which failure happened. Goes to the **same inbox as escalations**. |
 | Attribution | n8n's "sent automatically with n8n" line is turned off on all three Gmail nodes. |
 
-**You must set the staff inbox in TWO places:** `Send a message` (escalation) and `Send rescue email`. Both ship with
-`REPLACE_WITH_ESCALATION_INBOX@example.com`; a test asserts they are equal in the JSON, so don't change just one.
+**The staff inbox is set in ONE place:** the `Deployment config` node. `Send a message` (escalation) and `Send rescue email` both read it from there, and a test asserts
+they use the identical expression. The placeholder `REPLACE_WITH_ESCALATION_INBOX@example.com` is refused until you replace it.
 
 ### Known limits of the duplicate protection
 - The window is a clock hour: a repeat that straddles the hour boundary can create a second ticket. A genuinely new message always gets a new ID.

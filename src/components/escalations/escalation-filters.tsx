@@ -36,7 +36,7 @@ export function EscalationFiltersBar({
         />
       </div>
 
-      <div className="grid grid-cols-1 gap-2 sm:grid-cols-3 lg:flex lg:items-center">
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:flex lg:items-center">
         <Select
           aria-label="Filter by priority"
           value={filters.priority}
@@ -47,6 +47,18 @@ export function EscalationFiltersBar({
           <option value="all">All priorities</option>
           <option value="urgent">Urgent</option>
           <option value="high">High</option>
+        </Select>
+
+        <Select
+          aria-label="Filter by resolution"
+          value={filters.status}
+          onChange={(e) =>
+            onChange({ status: e.target.value as EscalationFilters["status"] })
+          }
+        >
+          <option value="all">All escalations</option>
+          <option value="active">Active</option>
+          <option value="resolved">Resolved</option>
         </Select>
 
         <Select

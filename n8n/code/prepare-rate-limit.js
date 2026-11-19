@@ -7,6 +7,27 @@ const S = $('Rate limit settings').first().json.settings;
 const form = $('Form Trigger').first().json ?? {};
 const email = String($('Validate submission').first().json['Your Email'] ?? '');
 
+// ---- the salt comes ONLY from 'Deployment config' and is re-checked here, so a placeholder, a missing or a weak
+// value (or a rewired workflow) stops the run instead of silently producing guessable hashes. Throwing makes the
+// execution fail: nothing is claimed, no ticket is made, no email is sent.
+const PLACEHOLDER_PATTERN = /replace[-_ ]?with|change[-_ ]?me|placeholder|your[-_ ]?(salt|secret|email|inbox|address)/i;
+// ---- BEGIN salt validator (identical in 'Deployment config' and 'Prepare rate limit'; a test enforces this)
+function saltProblems(value) {
+  if (typeof value !== 'string' || value.trim() === '') return ['rate_limit_salt_missing'];
+  if (PLACEHOLDER_PATTERN.test(value)) return ['rate_limit_salt_placeholder'];
+  // Printable ASCII with no spaces: what `openssl rand -hex 32` / `-base64 48` produce. No template or markup characters.
+  if (!/^[\x21-\x7e]+$/.test(value) || /[{}<>]/.test(value)) return ['rate_limit_salt_invalid_characters'];
+  const problems = [];
+  if (value.length < 32 || value.length > 256) problems.push('rate_limit_salt_length');
+  if (new Set(value).size < 8) problems.push('rate_limit_salt_low_variety');
+  return problems;
+}
+// ---- END salt validator
+const deployment = $('Deployment config').first().json.deployment;
+const SALT = deployment?.rateLimitSalt;
+const saltIssues = deployment?.ok === true ? saltProblems(SALT) : ['deployment_config_not_ok'];
+if (saltIssues.length > 0) throw new Error(`Rate limiter refused to run: invalid deployment configuration (${saltIssues.join(', ')})`);
+
 // ---- pure-JS SHA-256 (the Code node allows no built-in modules unless the operator enables them).
 // Identical to the function in 'Build ticket'.
 function sha256Hex(text) {
@@ -104,7 +125,7 @@ const nowMs = Date.now();
 // At least 5 minutes: a slot can never expire (and be deleted by the TTL policy) while the request that
 // holds it is still running or releasing it.
 const grace = num(S.retentionGraceSeconds, 300, 7 * 86400, 3600);
-const hash = (kind, value) => sha256Hex(`${S.salt}|${kind}|${value}`).slice(0, 24);
+const hash = (kind, value) => sha256Hex(`${SALT}|${kind}|${value}`).slice(0, 24);
 
 const ip = sourceIp();
 // ORDER MATTERS. Narrow checks (this source, this email) are claimed first and the global flood cap LAST, so a
@@ -125,7 +146,7 @@ try {
 }
 // Identifies THIS submission's claims. Stored in every slot it creates; a release only deletes a slot whose
 // stored claimId matches, so one submission can never give back another's slot.
-const claimId = sha256Hex(`${S.salt}|claim|${nowMs}|${executionId}|${Math.random()}|${Math.random()}`).slice(0, 32);
+const claimId = sha256Hex(`${SALT}|claim|${nowMs}|${executionId}|${Math.random()}|${Math.random()}`).slice(0, 32);
 
 const checks = defs.map(({ kind, key, cfg }) => {
   const limit = num(cfg?.limit, 1, 20, 3);

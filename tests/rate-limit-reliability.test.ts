@@ -8,6 +8,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { validDeployment } from "./deployment-fixtures";
 
 const read = (p: string) => readFileSync(new URL(`../n8n/${p}`, import.meta.url), "utf8");
 const wf = JSON.parse(read("ai-support-desk-automation.json"));
@@ -95,6 +96,7 @@ function* submission(env: Env, r: Req): Generator<void, Result, void> {
   if (r.ip !== null) headers["x-forwarded-for"] = r.ip ?? ip(1);
   ex.set("Form Trigger", { headers });
   ex.set("Validate submission", { "Your Name": r.name ?? "Ada", "Your Email": r.email, "What is it you would like us to fix ?": r.message ?? "Please help" });
+  ex.set("Deployment config", validDeployment().json);
   ex.run("Rate limit settings", "rate-limit-settings.js", {}, r.patch);
   const res: Result = { route: "", text: "", emails: [], held: [], released: 0, skipped: 0, releaseFailed: 0 };
 
@@ -225,11 +227,13 @@ test("B4: claim order is narrow first (IP or unknown bucket, then email) and glo
   const ex = new Execution("1", {}, T0);
   ex.set("Form Trigger", { headers: { "x-forwarded-for": ip(1) } });
   ex.set("Validate submission", { "Your Email": "a@example.com" });
+  ex.set("Deployment config", validDeployment().json);
   ex.run("Rate limit settings", "rate-limit-settings.js");
   const s = ex.run("Prepare rate limit", "prepare-rate-limit.js");
   assert.deepEqual(s.rl.checks.map((c: any) => [c.kind, c.limit, c.windowSeconds]), [["ip", 10, 3600], ["email", 3, 3600], ["global", 20, 60]]);
   const ex2 = new Execution("2", {}, T0);
   ex2.set("Form Trigger", { headers: {} });
+  ex2.set("Deployment config", validDeployment().json);
   ex2.set("Validate submission", { "Your Email": "a@example.com" });
   ex2.run("Rate limit settings", "rate-limit-settings.js");
   assert.deepEqual(ex2.run("Prepare rate limit", "prepare-rate-limit.js").rl.checks.map((c: any) => [c.kind, c.limit, c.windowSeconds]), [["unknown", 20, 3600], ["email", 3, 3600], ["global", 20, 60]]);
@@ -557,4 +561,12 @@ test("the numeric limits and customer-facing messages are unchanged from before 
   );
   assert.equal(s.messages.unavailable, "We couldn't process your request right now. Please try again in a little while.");
   assert.equal(s.messages.limited, "You've sent several requests recently, so we can't accept another one right now. Please try again later.");
+});
+
+test("every node in the workflow has a unique id and name (n8n refuses to import duplicates)", () => {
+  const w = JSON.parse(read("ai-support-desk-automation.json"));
+  const ids = w.nodes.map((n: any) => n.id);
+  assert.equal(new Set(ids).size, ids.length);
+  const names = w.nodes.map((n: any) => n.name);
+  assert.equal(new Set(names).size, names.length);
 });

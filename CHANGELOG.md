@@ -1,5 +1,42 @@
 # Changelog
 
+## Rate limiter starvation and rescue-email flooding (audit findings B4 + B5)
+
+- **B4:** claims are now IP/unknown, email, then global **last**; every slot carries a per-submission `claimId`; on refusal the held slots are released only after reading them and confirming the `claimId` (Firestore delete has no precondition). Refused submissions no longer consume global capacity, other requests' slots can never be released, atomic `create` is unchanged, a failed release only makes the limiter stricter. Limits, windows, messages and fail-closed behaviour are unchanged.
+- **B5:** refused-submission rescue emails (`rate_limit_unavailable`) are capped per window (3 detailed, 1 notice without customer data, then none) using atomic slot documents, with identifier-only `held_*` records for suppressed ones, a static-data fallback and a send-anyway degrade when both stores fail. Failed rescue emails are handled explicitly (held record, execution marked failed). Rescue emails for accepted tickets are not throttled.
+- Merged on top of B1, B2 (salt from `Deployment config`) and B3; the Send Response workflow, auth, Firestore rules and `src/` are untouched. New nodes got unique ids (a merge collision was found by importing into n8n and is now tested).
+- Tests: `tests/rate-limit-reliability.test.ts`; older graph assertions updated for the new topology. Docs: `docs/n8n-intake-workflow.md`.
+
+## Explicit ticket resolution and reopening (audit finding B3)
+
+- **Audit result:** there was no way to resolve a ticket. "Resolved" existed only as a *display* value read from a stored `status` that nothing in the dashboard or the n8n workflows ever wrote (n8n writes `pending_review`). The only existing "reopen" is the unrelated review action ("Submit for review again"). This is new work, not a duplicate.
+- **API:** `POST /api/tickets/[id]/resolution` with `{ "action": "resolve" | "reopen" }`. Same protections as the other mutating routes: sign-in (401/503), same-origin and JSON only (403/415), size cap, ID validated (400), then one Firestore transaction (404 missing ticket, 409 invalid transition). Only `action` is read from the body.
+- **Writes (and only these):** resolve sets `status: "resolved"`, `resolvedAt`, `resolvedBy` (the signed-in user) and an internal `statusBeforeResolution`. Reopen restores that status (`open` if unknown, never a finished status), clears `resolvedAt`/`resolvedBy`, and sets `reopenedAt`/`reopenedBy`. Escalation, review, response and `aiResponse`/`customerResponse` fields are never touched.
+- **History:** each change appends an immutable `ticket_resolved` / `ticket_reopened` event to `support_tickets/{id}/response_events` in the same transaction. Reopening never edits or deletes the resolve event; the reopen event records the resolution it reversed.
+- **Invalid transitions (409):** `already_resolved` (the original `resolvedAt`/`resolvedBy` are never overwritten, including for tickets closed outside the dashboard), `not_resolved` (reopen), and `send_in_progress` / `delivery_unconfirmed` (resolve is refused while an email is mid-send or its delivery is unconfirmed, the same rule the review actions use).
+- **No email, no n8n:** resolving never sends anything, never calls n8n and does not use the approval or Send Response code. Neither workflow JSON is modified.
+- **Dashboard:** "Mark as resolved" / "Reopen ticket" on the ticket page, with an inline confirmation, loading, success and error states. **Resolved now takes precedence in the single displayed status** (previously escalated and awaiting-review outranked it, so a resolved escalation would still read "Escalated"). Overview "Escalated tickets" became **"Active escalations"** (escalated and not resolved, with "N resolved of M escalated" beneath); "Awaiting review" no longer counts resolved tickets; on the Escalations page the total stays historical while Urgent / High / Awaiting attention count active escalations only, and a new Active / Resolved filter was added (default: all, so history stays visible). Whether a ticket *was* escalated (`escalationStatus`) and whether it is resolved now are separate facts and both are shown on the ticket page.
+- Tests: `tests/resolution.test.ts` (runs the real handler against the in-memory Firestore, plus dashboard consistency); the two route-protection tables now include the new route.
+- Not changed on purpose: approval, Send Response and follow-ups still work on a resolved ticket.
+
+## Secure deployment configuration and placeholder protection (audit finding B2)
+
+- **Placeholders can no longer pass as configuration.** The escalation inbox (`REPLACE_WITH_ESCALATION_INBOX@example.com`, previously in two Gmail nodes) and the rate-limit salt (`CHANGE-ME-TO-A-LONG-RANDOM-STRING`, previously in `Rate limit settings`) now live in one new `Deployment config` Code node. It validates both (inbox: one plain mailbox, not a placeholder or reserved example/test domain; salt: 32-256 printable characters, enough variety, not a placeholder) and reports problem codes only.
+- **Fail closed.** New first steps `Deployment config` -> `Deployment config valid?`: an invalid configuration answers the visitor with the existing "try again later" text and then fails the execution (`Stop and Error`). No rate-limit claim, Gemini call, ticket or email happens. `Prepare rate limit` independently re-validates the salt and throws.
+- **One inbox for both staff emails.** `Send a message` (escalation) and `Send rescue email` read the validated inbox from `Deployment config`; no address is stored in either node.
+- Rate-limiting algorithm, limits, hashing and the Send Response workflow are unchanged. Hashes only change if you choose a different salt than the one you had.
+- Tests: `tests/deployment-config.test.ts` (placeholder, missing and malformed values, gate wiring, forged flags, placeholder inventory, secret hygiene); `tests/rate-limit.test.ts` harness now supplies a valid test configuration.
+- Docs: new `docs/n8n-deployment-config.md` (exact manual setup, how to generate a random salt, caveats). **Manual setup is required before the workflow will process submissions.** Not run in a real n8n 2.47.7.
+
+## Secure automatic customer replies (audit finding B1)
+
+- **The model no longer writes anything that is emailed automatically.** A Low/Medium ticket is answered automatically only when the evaluation is complete, `kbStatus` is `covered`, `escalationRequired` is false, no unsupported parts remain, and every proposed step is found inside the article the model cites (by exact article ID, and title when given). The email text is a fixed template filled with the **article's own sentences**; the model's prose is stored only as a draft for agents.
+- Any step, article reference or output that cannot be verified, is ambiguous (duplicate titles), or whose sentence contains a link, e-mail address, markup or hidden/bidirectional characters sends the ticket to human review (`escalationRequired: true`, reason `Automatic reply blocked (<code>)`, new fields `groundingIssue`, `autoReplyArticleId`). `partially_covered` now always needs a human. The original submission is stored in every case.
+- `Select active articles` now also outputs `articles` (id, title, content). `Build ticket` verifies; `Prepare email fields` **re-verifies independently** against the article text and routes to staff if anything does not hold. The customer email node prints only `safe.greeting` (a plain Name-Case first name, otherwise "Hello,") and `safe.autoReplyText`.
+- Both Gemini prompts now delimit the customer text as untrusted data and the evaluation must return `relevantArticleId` and verbatim steps. **This is defence in depth only; nothing relies on the model obeying it.**
+- High/Urgent behaviour, the approval and Send Response workflow, rate limiting and authentication are unchanged. The Send Response workflow JSON is not modified.
+- Tests: `tests/auto-reply-grounding.test.ts` (adversarial and randomised). Existing fixtures that expected an ungrounded automatic reply were updated to cite a real article. Not run against a real n8n, Gemini, Firestore or Gmail.
+
 ## Dashboard: greeting, search, settings, polish
 
 - The overview greeting is now time-aware (morning 05:00-11:59, afternoon 12:00-16:59, evening 17:00-04:59) in the chosen time zone and updates without a reload.

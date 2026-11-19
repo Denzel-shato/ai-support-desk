@@ -19,9 +19,9 @@ const SETTINGS = {
   //              worse for you than abuse getting through while Firestore is failing.
   failMode: 'closed',
 
-  // Mixed into every stored key so the stored hashes can't be reversed by guessing IP addresses or
-  // emails. REPLACE WITH A LONG RANDOM STRING and keep it secret; changing it resets all counters.
-  salt: 'CHANGE-ME-TO-A-LONG-RANDOM-STRING',
+  // The salt that is mixed into every stored key is NOT set here. It lives in the 'Deployment config' node
+  // (with the staff inbox), is validated there and again in 'Prepare rate limit', and a placeholder or weak
+  // value stops the workflow. See docs/n8n-deployment-config.md. Changing the salt resets all counters.
 
   // Where the visitor's IP comes from. The Form Trigger exposes request HEADERS only (no socket address),
   // and anyone can send any header themselves, so this is trustworthy ONLY when your own reverse proxy /

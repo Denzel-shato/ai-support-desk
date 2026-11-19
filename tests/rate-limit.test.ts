@@ -7,6 +7,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { TEST_SALT, TEST_SALT_B, validDeployment } from "./deployment-fixtures";
 
 const read = (p: string) => readFileSync(new URL(`../n8n/${p}`, import.meta.url), "utf8");
 const wf = JSON.parse(read("ai-support-desk-automation.json"));
@@ -56,7 +57,7 @@ class Store {
     return { json: { _id: id } };
   }
 }
-type Req = { email: string; ip?: string | null; header?: string; nowMs?: number; patch?: (s: any) => any };
+type Req = { email: string; ip?: string | null; header?: string; nowMs?: number; patch?: (s: any) => any; salt?: string };
 type Result = { route: string; degraded?: boolean; limitedBy?: string; text: string; docIds: string[] };
 
 // A generator so tests can interleave several submissions at the point where they touch the store.
@@ -64,7 +65,7 @@ function* submission(store: Store, r: Req): Generator<void, Result, void> {
   const headers: Record<string, string> = {};
   if (r.ip !== null && r.ip !== undefined) headers[r.header ?? "x-forwarded-for"] = r.ip;
   const settingsItem = runNode("rate-limit-settings.js", { input: {}, patch: r.patch });
-  const base = { "Rate limit settings": [{ json: settingsItem }], "Form Trigger": [{ json: { headers } }], "Validate submission": [{ json: { "Your Email": r.email } }] };
+  const base = { "Deployment config": [validDeployment({ rateLimitSalt: r.salt ?? TEST_SALT })], "Rate limit settings": [{ json: settingsItem }], "Form Trigger": [{ json: { headers } }], "Validate submission": [{ json: { "Your Email": r.email } }] };
   let state: Record<string, any> = runNode("prepare-rate-limit.js", { nodes: base, nowMs: r.nowMs });
   const docIds: string[] = [];
   for (let guard = 0; guard < 500; guard++) {
@@ -275,10 +276,10 @@ test("only salted hashes and timestamps are stored: no raw IP or email, and a di
     assert.deepEqual(Object.keys(doc).sort(), ["createdAt", "expireAt", "kind", "slot"]);
     assert.doesNotMatch(JSON.stringify(doc), /198\.51\.100|ada|@/);
   }
-  const keys = (salt: string) => { const x = new Store(); run(x, { email: "ada@example.com", ip: ip(9), patch: (c) => ({ ...c, salt }) }); return [...x.docs.keys()].filter((k) => !k.includes("global")).join(); };
-  assert.notEqual(keys("salt-one"), keys("salt-two"));
-  assert.equal(keys("salt-one"), keys("salt-one"));
-  assert.match(read("code/rate-limit-settings.js"), /salt: 'CHANGE-ME/, "ships with a placeholder the operator must replace");
+  const keys = (salt: string) => { const x = new Store(); run(x, { email: "ada@example.com", ip: ip(9), salt }); return [...x.docs.keys()].filter((k) => !k.includes("global")).join(); };
+  assert.notEqual(keys(TEST_SALT), keys(TEST_SALT_B));
+  assert.equal(keys(TEST_SALT), keys(TEST_SALT));
+  assert.doesNotMatch(read("code/rate-limit-settings.js"), /salt\s*:|CHANGE-ME/, "the salt is configured in 'Deployment config' only, never in the settings node");
 });
 
 test("every stored document expires after its window plus the grace period (so a TTL policy can delete it)", () => {

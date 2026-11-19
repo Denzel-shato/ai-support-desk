@@ -14,6 +14,7 @@ const routes: [string, string, () => Promise<{ default?: never } & Record<string
   ["tickets/[id]/messages", "GET", () => import("@/app/api/tickets/[id]/messages/route"), "GET"],
   ["tickets/[id]/review", "POST", () => import("@/app/api/tickets/[id]/review/route"), "POST"],
   ["tickets/[id]/send", "POST", () => import("@/app/api/tickets/[id]/send/route"), "POST"],
+  ["tickets/[id]/resolution", "POST", () => import("@/app/api/tickets/[id]/resolution/route"), "POST"],
   ["tickets/[id]/reconcile", "POST", () => import("@/app/api/tickets/[id]/reconcile/route"), "POST"],
   ["tickets/[id]/followups", "POST", () => import("@/app/api/tickets/[id]/followups/route"), "POST"],
   ["followups/[messageId]/reconcile", "POST", () => import("@/app/api/tickets/[id]/followups/[messageId]/reconcile/route"), "POST"],

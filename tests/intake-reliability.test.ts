@@ -53,13 +53,15 @@ type Item = { json: Record<string, any> };
 const form = { "Your Name": "Ada", "Your Email": "ada@example.com", "What is it you would like us to fix ?": "App crashes" };
 const model = (obj: unknown) => [{ json: { content: { parts: [{ text: JSON.stringify(obj) }] } } }];
 const classification = (priority = "Low") => model({ category: "Bug", reason: "r", sentiment: "Negative", priority, summary: "s" });
-const evaluation = model({ kbStatus: "covered", relevantSection: "Crash", coverageReason: "c", supportedSteps: ["Reinstall"], unsupportedParts: [], escalationRequired: false, customerResponse: "Hello Ada" });
+// A real article the evaluation can be grounded in: automatic replies are only built from its own sentences.
+const KB_ARTICLES = [{ id: "a1", title: "Crash", content: "Reinstall the app from the store.\nClear the app cache before reopening it." }];
+const evaluation = model({ kbStatus: "covered", relevantArticleId: "a1", relevantSection: "Crash", coverageReason: "c", supportedSteps: ["Reinstall the app from the store."], unsupportedParts: [], escalationRequired: false, customerResponse: "Hello Ada" });
 
 function build(f: Record<string, string> = form, opts: { nowMs?: number; executionId?: string | null; priority?: string } = {}): Record<string, any> {
   const nodesData: Record<string, Item[]> = {
     "Validate submission": [{ json: { valid: true, errors: [], ...f } }],
     "Message a model": classification(opts.priority),
-    "Select active articles": [{ json: { articleCount: 2, kbUnavailable: false } }],
+    "Select active articles": [{ json: { articleCount: 1, kbUnavailable: false, articles: KB_ARTICLES } }],
     "Message a model1": evaluation,
   };
   const $ = (name: string) => {
