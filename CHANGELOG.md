@@ -1,5 +1,14 @@
 # Changelog
 
+## Secure automatic customer replies (audit finding B1)
+
+- **The model no longer writes anything that is emailed automatically.** A Low/Medium ticket is answered automatically only when the evaluation is complete, `kbStatus` is `covered`, `escalationRequired` is false, no unsupported parts remain, and every proposed step is found inside the article the model cites (by exact article ID, and title when given). The email text is a fixed template filled with the **article's own sentences**; the model's prose is stored only as a draft for agents.
+- Any step, article reference or output that cannot be verified, is ambiguous (duplicate titles), or whose sentence contains a link, e-mail address, markup or hidden/bidirectional characters sends the ticket to human review (`escalationRequired: true`, reason `Automatic reply blocked (<code>)`, new fields `groundingIssue`, `autoReplyArticleId`). `partially_covered` now always needs a human. The original submission is stored in every case.
+- `Select active articles` now also outputs `articles` (id, title, content). `Build ticket` verifies; `Prepare email fields` **re-verifies independently** against the article text and routes to staff if anything does not hold. The customer email node prints only `safe.greeting` (a plain Name-Case first name, otherwise "Hello,") and `safe.autoReplyText`.
+- Both Gemini prompts now delimit the customer text as untrusted data and the evaluation must return `relevantArticleId` and verbatim steps. **This is defence in depth only; nothing relies on the model obeying it.**
+- High/Urgent behaviour, the approval and Send Response workflow, rate limiting and authentication are unchanged. The Send Response workflow JSON is not modified.
+- Tests: `tests/auto-reply-grounding.test.ts` (adversarial and randomised). Existing fixtures that expected an ungrounded automatic reply were updated to cite a real article. Not run against a real n8n, Gemini, Firestore or Gmail.
+
 ## Dashboard: greeting, search, settings, polish
 
 - The overview greeting is now time-aware (morning 05:00-11:59, afternoon 12:00-16:59, evening 17:00-04:59) in the chosen time zone and updates without a reload.

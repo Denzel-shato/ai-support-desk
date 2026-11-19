@@ -17,9 +17,13 @@
 //  4. When a model step failed we store only what the customer submitted plus
 //     `intakeIssue`. No classification and no customer response is invented.
 //  5. An automatic answer is only possible when ALL of this holds: Low/Medium,
-//     kbStatus covered or partially_covered, escalationRequired false, no
-//     intakeIssue, and a response exists. Otherwise escalationStatus is
-//     "required", which sends the ticket to staff and sends the customer nothing.
+//     kbStatus "covered", escalationRequired false, no unsupported parts, no
+//     intakeIssue, AND the GROUNDING block below verified every step against the
+//     cited article. The email is then a fixed template filled with the ARTICLE's
+//     own sentences: the model's prose is never emailed automatically (it is kept
+//     as a draft for an agent). Otherwise escalationStatus is "required", which
+//     sends the ticket to staff and sends the customer nothing. The original
+//     submission is stored either way.
 //  6. The document ID is DETERMINISTIC (see ticketIdFor): the same submission within the same hour
 //     always maps to the same ID, so a double submit or a retried write cannot create two tickets.
 //     `intakeExecutionId` lets the workflow tell "my own earlier attempt" from "someone else's".
@@ -61,6 +65,97 @@ const list = (v) =>
     : typeof v === 'string' && v.trim()
       ? [v]
       : [];
+
+// ---- BEGIN GROUNDING (byte-identical in 'Build ticket' and 'Prepare email fields'; a test enforces it)
+// An automatic customer email is NEVER written by the model. It is assembled here from a fixed template and
+// sentences copied word for word from a knowledge-base article that staff wrote. A step the model proposes is
+// accepted only when it can be located inside the article it cites, and what is emailed is the ARTICLE's wording,
+// never the model's. Anything that cannot be verified, or that could carry a link or address, needs a human.
+const GROUNDING = (() => {
+  const MAX_STEPS = 8;
+  const MAX_UNIT = 400;
+  const MIN_STEP = 12;
+  const UNSAFE = /https?:|ftp:|www\.|mailto:|javascript:|\bdata:|[a-z0-9-]+\.[a-z]{2,}(?:\/|\b)|@|\]\(|[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f\u200b-\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069\ufeff]/i;
+  const norm = (s) => String(s ?? '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+  const cleanLine = (l) => String(l).replace(/^\s*(?:#{1,6}\s+|[-*+•]\s+|\d+[.)]\s+)/, '').replace(/[*_`~]+/g, '').replace(/\s+/g, ' ').trim();
+  const unitsOf = (content) => {
+    const seen = new Set();
+    const out = [];
+    const add = (t) => {
+      if (!t || t.length > MAX_UNIT) return;
+      const n = norm(t);
+      if (!n || seen.has(n)) return;
+      seen.add(n);
+      out.push({ text: t, n });
+    };
+    for (const raw of String(content ?? '').split(/\r?\n/)) {
+      const line = cleanLine(raw);
+      add(line);
+      const parts = line.split(/(?<=[.!?])\s+/);
+      if (parts.length > 1) for (const p of parts) add(p.trim());
+    }
+    return out;
+  };
+  // The shortest article sentence/line that contains the step and that the step substantially covers.
+  const ground = (step, units) => {
+    const ns = norm(step);
+    if (ns.length < MIN_STEP) return null;
+    let best = null;
+    for (const u of units) {
+      if ((' ' + u.n + ' ').includes(' ' + ns + ' ') && ns.length * 2 >= u.n.length && (!best || u.n.length < best.n.length)) best = u;
+    }
+    return best;
+  };
+  const resolveArticle = (articleId, title, articles) => {
+    const list = Array.isArray(articles) ? articles.filter((a) => a && typeof a.id === 'string' && a.id && typeof a.title === 'string' && typeof a.content === 'string') : [];
+    if (articleId !== undefined && articleId !== null && typeof articleId !== 'string') return { ok: false, code: 'article_mismatch' };
+    const id = typeof articleId === 'string' ? articleId.trim() : '';
+    const t = typeof title === 'string' ? norm(title) : '';
+    if (id) {
+      const hit = list.filter((a) => a.id === id);
+      if (hit.length !== 1) return { ok: false, code: 'article_not_found' };
+      if (t && norm(hit[0].title) !== t) return { ok: false, code: 'article_mismatch' };
+      return { ok: true, article: hit[0] };
+    }
+    if (t) {
+      const hit = list.filter((a) => norm(a.title) === t);
+      if (hit.length === 0) return { ok: false, code: 'article_not_found' };
+      if (hit.length > 1) return { ok: false, code: 'ambiguous_article' };
+      return { ok: true, article: hit[0] };
+    }
+    return { ok: false, code: 'article_not_cited' };
+  };
+  const verify = (articleId, title, steps, articles) => {
+    const r = resolveArticle(articleId, title, articles);
+    if (!r.ok) return r;
+    const a = r.article;
+    if (!norm(a.title) || a.title.length > 150 || UNSAFE.test(a.title)) return { ok: false, code: 'unsafe_title' };
+    const given = Array.isArray(steps) ? steps : [];
+    if (!given.length || given.length > MAX_STEPS || given.some((s) => typeof s !== 'string')) return { ok: false, code: 'no_steps' };
+    const units = unitsOf(a.content);
+    const out = [];
+    for (const s of given) {
+      const u = ground(s, units);
+      if (!u) return { ok: false, code: 'step_not_in_article' };
+      if (UNSAFE.test(u.text)) return { ok: false, code: 'unsafe_text' };
+      if (!out.includes(u.text)) out.push(u.text);
+    }
+    return { ok: true, article: a, steps: out };
+  };
+  // Only a plain first name may appear in a greeting; the submitted name is otherwise untrusted text.
+  const firstName = (name) => {
+    const f = String(name ?? '').trim().split(/\s+/)[0] ?? '';
+    if (!/^[\p{L}\p{M}][\p{L}\p{M}'’-]{0,29}$/u.test(f)) return '';
+    // Name-Case only (Ada, Mary-Jane, O'Neil): ALL-CAPS words and mid-word capitals are not used as a greeting.
+    return /\p{Lu}/u.test(f.replace(/[-'’]\p{Lu}/gu, '-').slice(1)) ? '' : f;
+  };
+  const render = (title, steps) =>
+    'We found guidance in our knowledge base that may help with your request.\n\nArticle: ' + title + '\n\n' +
+    steps.map((s, i) => `${i + 1}. ${s}`).join('\n') +
+    '\n\nThese steps are general guidance and may not resolve your issue.';
+  return { verify, resolveArticle, firstName, render, UNSAFE };
+})();
+// ---- END GROUNDING
 
 // ---- deterministic ticket ID
 // Pure-JS SHA-256: n8n's Code node does not allow require('crypto') unless the operator enables it.
@@ -107,7 +202,7 @@ const ticketIdFor = (email, message, nowMs) =>
     [String(email).trim().toLowerCase(), String(message).replace(/\s+/g, ' ').trim(), Math.floor(nowMs / 3600000)].join('\n'),
   ).slice(0, 32);
 
-let kb = { articleCount: 0, kbUnavailable: true }; // unknown => treat as unavailable
+let kb = { articleCount: 0, kbUnavailable: true, articles: [] }; // unknown => treat as unavailable
 try {
   kb = $('Select active articles').first().json ?? kb;
 } catch {
@@ -172,8 +267,35 @@ if (noKnowledge) {
   };
 }
 
-// ---- routing: one decision
+// ---- automatic-reply grounding (see the GROUNDING block above)
+// Only a Low/Medium ticket with a complete, fully "covered" evaluation that asks for no escalation can be answered
+// automatically, and only with sentences copied from the article it cites. Whatever the model wrote beyond that is
+// kept as a draft for an agent and is never emailed to the customer.
 const autoPriority = priority === 'Low' || priority === 'Medium';
+let groundingIssue;
+let autoReplyArticleId;
+if (autoPriority && !intakeIssue && kbFields.escalationRequired === false) {
+  let g;
+  if (kbFields.kbStatus !== 'covered') g = { ok: false, code: 'not_fully_covered' };
+  else if (list(ev.unsupportedParts).length) g = { ok: false, code: 'unsupported_parts_remain' };
+  else {
+    const r = GROUNDING.resolveArticle(ev.relevantArticleId, ev.relevantSection, kb.articles);
+    g = r.ok ? GROUNDING.verify(r.article.id, r.article.title, list(ev.supportedSteps), kb.articles) : r;
+  }
+  if (g.ok) {
+    kbFields.relevantSection = g.article.title;
+    kbFields.supportedSteps = g.steps;
+    kbFields.customerResponse = GROUNDING.render(g.article.title, g.steps);
+    autoReplyArticleId = g.article.id;
+  } else {
+    groundingIssue = g.code;
+    kbFields.escalationRequired = true;
+    kbFields.supportedSteps = [];
+    kbFields.relevantSection = null;
+  }
+}
+
+// ---- routing: one decision
 const humanReview =
   !autoPriority ||
   kbFields.escalationRequired === true ||
@@ -188,6 +310,8 @@ if (intakeIssue) {
   escalationReason = 'High-priority ticket requires faster attention';
 } else if (!autoPriority) {
   escalationReason = 'Priority missing or invalid: human review required';
+} else if (groundingIssue) {
+  escalationReason = `Automatic reply blocked (${groundingIssue}): the answer could not be verified against the knowledge-base article, human review required`;
 } else if (kbFields.kbStatus === 'not_covered' || kbFields.escalationRequired === true) {
   escalationReason = 'The knowledge base does not support an automatic answer: human review required';
 } else if (!kbFields.customerResponse) {
@@ -234,6 +358,8 @@ const ticket = {
   reviewStatus: 'awaiting_review',
 };
 if (intakeIssue) ticket.intakeIssue = intakeIssue;
+if (groundingIssue) ticket.groundingIssue = groundingIssue;
+if (autoReplyArticleId) ticket.autoReplyArticleId = autoReplyArticleId;
 if (humanReview) ticket.escalatedAt = now;
 
 // Drop undefined keys so the Firestore node never receives them.

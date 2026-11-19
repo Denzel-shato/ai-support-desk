@@ -93,6 +93,31 @@ tickets, Gemini calls and (Low/Medium) acknowledgement emails. Execution data fo
    is a new public page, so do it only if option 1 isn't enough.
 3. **Cap spend:** set a budget/quota on the Gemini API key so abuse can't run up cost.
 
+## Automatic customer replies: grounding (audit finding B1)
+
+**Threat.** The customer's message, name and address are untrusted. Before this change a Low/Medium ticket was emailed whatever the model wrote whenever the model's own JSON said `covered` and `escalationRequired: false`, so a prompt-injected model could make the company mailbox send attacker-chosen text, links or instructions to any address.
+
+**What now decides whether an automatic email is sent** (deterministic code, not the model):
+
+1. Priority is exactly Low or Medium, no `intakeIssue`, evaluation complete, `kbStatus` is `covered`, `escalationRequired` is false and `unsupportedParts` is empty.
+2. The cited article exists among the **active** articles: by exact `relevantArticleId` (title must agree if given), or by a unique exact title when no ID is given. Unknown, mismatched, ambiguous or non-string references are refused.
+3. Every `supportedSteps` entry is located inside that article (normalised, whole-word, and the step must cover at least half of the matching article sentence/line; 12+ characters). The email uses the **article's sentence**, not the model's wording. Paraphrases, merged steps and invented steps fail.
+4. None of the sentences or the title contains a URL, domain, e-mail address, `@`, Markdown link, control or bidirectional characters. A staff-written article that contains a link therefore always goes to a human.
+5. The email text is a fixed template (`GROUNDING.render`): intro line, `Article: <title>`, numbered article sentences, fixed disclaimer. The greeting uses only a plain Name-Case first name, otherwise just "Hello,". Subject and surrounding text are fixed.
+
+`Prepare email fields` repeats steps 1-5 from the stored ticket and the article text, and sets `escalationStatus: required` if anything fails, so a bug in `Build ticket` still cannot cause an automatic send. The customer email node cannot print `customerResponse` at all.
+
+**On any failure** the ticket is stored with the untouched submission, `escalationRequired: true`, `escalationStatus: required`, `groundingIssue: <code>`, an escalation reason, an empty `supportedSteps`, and the model's prose kept as a draft the agent may edit and send through the unchanged approval/Send Response flow. Codes: `not_fully_covered`, `unsupported_parts_remain`, `article_not_cited`, `article_not_found`, `article_mismatch`, `ambiguous_article`, `unsafe_title`, `no_steps`, `step_not_in_article`, `unsafe_text`.
+
+**Residual risks (not solved).**
+- A model can still be steered into choosing a *different real article* or real steps for the wrong problem. The customer then receives genuine, staff-written guidance that may not fit, and nobody reviews it. Only wording, not relevance, is verified.
+- The recipient address is still unverified: anyone can make the system send a (safe, template) email to a third party. Rate limits bound the volume; email-ownership confirmation would be the real fix.
+- The greeting still contains up to 30 submitter-chosen letters (e.g. "Hello Winner,").
+- Human-reviewed drafts still contain model prose; an agent must read them before approving. The staff escalation email and dashboard show attacker-controlled text (HTML-escaped).
+- An article written by staff is trusted. Anyone who can edit the knowledge base can change what is sent.
+- Prompt injection can still corrupt classification (priority, category) and summaries; a wrongly Low priority only affects whether the grounded template is sent.
+- Verified only by tests that run the Code nodes in Node. The n8n Firestore node's returned types (booleans, arrays) and `$('Select active articles')` access must be confirmed in a real n8n run: the second gate fails closed (everything goes to staff) if they differ.
+
 ## Rate limiting
 
 ### What the Form Trigger gives us (inspected in n8n 2.47.7)
