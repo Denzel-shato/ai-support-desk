@@ -1,3 +1,4 @@
+import { formatDateShort } from "./dashboard-settings";
 import { toTicketRow } from "./overview";
 import type { Priority, SupportTicketRecord, Ticket, TicketStatus } from "./types";
 
@@ -49,19 +50,23 @@ function str(value: unknown): string {
 
 /**
  * Builds the searchable index once per fetch. Search covers customer name,
- * email, original message, AI summary and the Firestore document ID.
+ * email, original message, AI summary, category and the Firestore document ID.
  */
 export function indexTickets(
   records: SupportTicketRecord[],
   now: Date,
 ): IndexedTicket[] {
-  return records.map((t) => ({
-    row: toTicketRow(t, now),
-    haystack: [t.customerName, t.customerEmail, t.message, t.summary, t.id]
-      .map(str)
-      .join("\n")
-      .toLowerCase(),
-  }));
+  return records.map((t) => {
+    const row = toTicketRow(t, now);
+    return {
+      row,
+      // `row.category` is the label shown in the table ("Billing Issue"); the raw value ("billing_issue") also matches.
+      haystack: [t.customerName, t.customerEmail, t.message, t.summary, t.category, row.category, t.id]
+        .map(str)
+        .join("\n")
+        .toLowerCase(),
+    };
+  });
 }
 
 /** Distinct category labels present in the data, A to Z. */
@@ -120,16 +125,7 @@ export function applyFilters(
     });
 }
 
-/** Compact absolute date for table cells, e.g. "14 Nov 2026, 09:40". */
-export function formatCreatedShort(iso: string | null): string | null {
-  if (!iso) return null;
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return null;
-  return date.toLocaleString("en-GB", {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+/** Compact absolute date for table cells, e.g. "14 Nov 2026, 09:40", in the chosen time zone. */
+export function formatCreatedShort(iso: string | null, timeZone?: string): string | null {
+  return formatDateShort(iso, timeZone);
 }

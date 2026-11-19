@@ -11,7 +11,8 @@ rules_version = '2';
 //  - Both of those BYPASS these rules, so denying client access removes nothing the app uses.
 //
 // Collections this protects (all server-only): support_tickets (and its messages / events
-// subcollections), knowledge_base, rate_limits, n8n_send_log. There is no public read or write.
+// subcollections), knowledge_base, rate_limits, n8n_send_log,
+// app_settings (dashboard preferences, written by /api/settings). There is no public read or write.
 //
 // If you later add a client-side Firebase feature, do not loosen this file: add a narrow `match`
 // for that one path, require request.auth, and add a test in tests/security.test.ts.

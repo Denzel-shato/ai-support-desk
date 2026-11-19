@@ -1,3 +1,4 @@
+import { formatDateLong } from "./dashboard-settings";
 import { displayStatus, isEscalated, normalizePriority } from "./overview";
 import type {
   Priority,
@@ -59,11 +60,8 @@ function toBoolean(value: unknown): boolean | null {
   return null;
 }
 
-export function formatDateTime(iso: string | null | undefined): string | null {
-  if (!iso) return null;
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return null;
-  return date.toLocaleString("en-GB", { dateStyle: "long", timeStyle: "short" });
+export function formatDateTime(iso: string | null | undefined, timeZone?: string): string | null {
+  return formatDateLong(iso, timeZone);
 }
 
 export interface TicketDetailView {
@@ -75,6 +73,7 @@ export interface TicketDetailView {
   message: string | null;
   createdAt: string | null;
   createdLabel: string | null;
+  escalatedAt: string | null;
   priority: Priority;
   /** Single derived status, same rules as the Overview and All Tickets table. */
   status: TicketStatus;
@@ -163,6 +162,7 @@ export function buildTicketDetail(t: SupportTicketRecord): TicketDetailView {
     escalationRequired: toBoolean(t.escalationRequired),
     escalationStatus: humanizeValue(t.escalationStatus),
     escalationReason: cleanText(t.escalationReason),
+    escalatedAt: t.escalatedAt ?? null,
     escalatedLabel: formatDateTime(t.escalatedAt),
     reviewStatus: humanizeValue(t.reviewStatus),
     escalated: isEscalated(t),

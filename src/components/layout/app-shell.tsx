@@ -1,6 +1,7 @@
 "use client";
 
 import { Suspense, useState } from "react";
+import { SettingsProvider } from "@/components/settings/settings-context";
 import { Header } from "./header";
 import { MobileDrawer, Sidebar } from "./sidebar";
 
@@ -8,6 +9,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [navOpen, setNavOpen] = useState(false);
 
   return (
+    <SettingsProvider>
     <div className="min-h-screen">
       {/* Sidebar, drawer and header read the current pathname. On dynamic
           routes such as /tickets/[id] it isn't known while prerendering, so
@@ -35,5 +37,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </main>
       </div>
     </div>
+    </SettingsProvider>
   );
 }

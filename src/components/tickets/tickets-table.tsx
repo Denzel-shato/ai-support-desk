@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { PriorityBadge } from "@/components/overview/priority-badge";
 import { StatusBadge } from "@/components/overview/status-badge";
+import { useDashboardSettings } from "@/components/settings/settings-context";
 import { formatCreatedShort } from "@/lib/tickets-list";
 import type { Ticket } from "@/lib/types";
 
@@ -17,6 +18,7 @@ function href(id: string) {
 /** Table from md up, stacked list below it. Every row opens the ticket. */
 export function TicketsTable({ tickets }: { tickets: Ticket[] }) {
   const router = useRouter();
+  const { timeZone } = useDashboardSettings().settings;
 
   return (
     <>
@@ -85,7 +87,7 @@ export function TicketsTable({ tickets }: { tickets: Ticket[] }) {
                 </td>
                 <td className="whitespace-nowrap px-4 py-3 text-right">
                   <p className="text-[13px]">
-                    {formatCreatedShort(t.createdAt) ?? "Unknown date"}
+                    {formatCreatedShort(t.createdAt, timeZone) ?? "Unknown date"}
                   </p>
                   {t.createdAt && (
                     <p className="mt-0.5 text-xs text-muted-foreground">
@@ -118,7 +120,7 @@ export function TicketsTable({ tickets }: { tickets: Ticket[] }) {
                 </span>
               </div>
               <p className="mt-2 break-all text-xs text-subtle-foreground">
-                {t.id} · {formatCreatedShort(t.createdAt) ?? "Unknown date"}
+                {t.id} · {formatCreatedShort(t.createdAt, timeZone) ?? "Unknown date"}
               </p>
             </Link>
           </li>

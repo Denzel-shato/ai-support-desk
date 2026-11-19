@@ -92,6 +92,7 @@ export class FakeDoc {
   collection(name: string) { return new FakeCollection(this.db, `${this.path}/${name}`); }
   async get() { return new FakeSnap(this.db, this.path); }
   async create(value: Record<string, unknown>) { return this._create(value); }
+  async set(value: Record<string, unknown>) { this.db._write("set", this.path, structuredClone(value)); return {}; }
   _create(value: Record<string, unknown>) {
     if (this.db.data.has(this.path)) {
       throw Object.assign(new Error("ALREADY_EXISTS"), { code: 6 });

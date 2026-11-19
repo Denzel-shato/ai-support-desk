@@ -1,6 +1,9 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useDashboardSettings } from "@/components/settings/settings-context";
+import { formatClock } from "@/lib/dashboard-settings";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { RefreshCw, SearchX } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -32,7 +35,36 @@ import { TicketsTable } from "./tickets-table";
 export function TicketsExplorer() {
   const { tickets, error, loading, refreshing, updatedAt, truncated, refresh } =
     useTickets();
-  const [filters, setFilters] = useState<TicketFilters>(DEFAULT_FILTERS);
+  const { settings } = useDashboardSettings();
+  const { timeZone } = settings;
+  const urlSearch = (useSearchParams().get("q") ?? "").slice(0, 200);
+  const [filters, setFilters] = useState<TicketFilters>({ ...DEFAULT_FILTERS, search: urlSearch });
+  const sortTouched = useRef(false);
+
+  // The saved default sort applies when it arrives, unless the user already picked an order here.
+  useEffect(() => {
+    if (!sortTouched.current) setFilters((f) => (f.sort === settings.defaultSort ? f : { ...f, sort: settings.defaultSort }));
+  }, [settings.defaultSort]);
+
+  // A search typed in the header (…/tickets?q=) lands here; a different q replaces the box.
+  const lastUrlSearch = useRef(urlSearch);
+  useEffect(() => {
+    if (urlSearch !== lastUrlSearch.current) {
+      lastUrlSearch.current = urlSearch;
+      setFilters((f) => (f.search === urlSearch ? f : { ...f, search: urlSearch }));
+    }
+  }, [urlSearch]);
+
+  // Keep the address bar in step with the box (shareable, survives reload) without a server round trip.
+  useEffect(() => {
+    const q = filters.search.trim().slice(0, 200);
+    const url = new URL(window.location.href);
+    if ((url.searchParams.get("q") ?? "") === q) return;
+    lastUrlSearch.current = q;
+    if (q) url.searchParams.set("q", q);
+    else url.searchParams.delete("q");
+    window.history.replaceState(window.history.state, "", url);
+  }, [filters.search]);
 
   // Index once per fetch; filtering below only re-runs the cheap part.
   const indexed = useMemo(
@@ -54,7 +86,7 @@ export function TicketsExplorer() {
   );
 
   const total = indexed?.length ?? 0;
-  const clear = () => setFilters(DEFAULT_FILTERS);
+  const clear = () => setFilters({ ...DEFAULT_FILTERS, sort: settings.defaultSort });
 
   return (
     <div className="space-y-5">
@@ -66,10 +98,7 @@ export function TicketsExplorer() {
           {updatedAt && (
             <span className="text-xs text-muted-foreground">
               Updated{" "}
-              {updatedAt.toLocaleTimeString("en-GB", {
-                hour: "2-digit",
-                minute: "2-digit",
-              })}
+              {formatClock(updatedAt, timeZone)}
             </span>
           )}
           <Button
@@ -114,7 +143,10 @@ export function TicketsExplorer() {
             <TicketFiltersBar
               filters={filters}
               categories={categories}
-              onChange={(patch) => setFilters((f) => ({ ...f, ...patch }))}
+              onChange={(patch) => {
+                if (patch.sort) sortTouched.current = true;
+                setFilters((f) => ({ ...f, ...patch }));
+              }}
               onClear={clear}
             />
 

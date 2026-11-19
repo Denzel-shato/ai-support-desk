@@ -1,7 +1,8 @@
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { ChevronRight, Menu, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -9,6 +10,18 @@ import { isActive, navItems } from "./nav-config";
 
 export function Header({ onOpenNav }: { onOpenNav: () => void }) {
   const pathname = usePathname();
+  const router = useRouter();
+  const urlQuery = useSearchParams().get("q") ?? "";
+  // Show the active ticket search on the tickets page; elsewhere the box starts empty.
+  const [typed, setTyped] = useState<string | null>(null);
+  const query = typed ?? (pathname === "/tickets" ? urlQuery : "");
+
+  function submitSearch(e: React.FormEvent) {
+    e.preventDefault();
+    const q = query.trim().slice(0, 200);
+    setTyped(null);
+    router.push(q ? `/tickets?q=${encodeURIComponent(q)}` : "/tickets");
+  }
   const current =
     navItems.find((item) => isActive(pathname, item.href)) ?? navItems[0];
   // /tickets/<id> gets an extra breadcrumb level back to the list.
@@ -57,7 +70,7 @@ export function Header({ onOpenNav }: { onOpenNav: () => void }) {
       </nav>
 
       <div className="ml-auto flex items-center gap-2">
-        <div className="relative hidden w-64 md:block">
+        <form role="search" onSubmit={submitSearch} className="relative hidden w-64 md:block">
           <Search
             className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-subtle-foreground"
             aria-hidden
@@ -65,17 +78,23 @@ export function Header({ onOpenNav }: { onOpenNav: () => void }) {
           <Input
             type="search"
             placeholder="Search tickets, customers"
-            aria-label="Search tickets and customers"
+            aria-label="Search tickets and customers (press Enter)"
             className="pl-8"
+            value={query}
+            maxLength={200}
+            onChange={(e) => setTyped(e.target.value)}
           />
-        </div>
+        </form>
         <Button
           variant="ghost"
           size="icon"
           className="md:hidden"
-          aria-label="Search"
+          aria-label="Search tickets"
+          asChild
         >
-          <Search />
+          <Link href="/tickets">
+            <Search />
+          </Link>
         </Button>
       </div>
     </header>

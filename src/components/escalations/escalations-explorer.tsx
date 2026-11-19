@@ -1,5 +1,7 @@
 "use client";
 
+import { useDashboardSettings } from "@/components/settings/settings-context";
+import { formatClock } from "@/lib/dashboard-settings";
 import { useMemo, useState } from "react";
 import { RefreshCw, SearchX, ShieldCheck } from "lucide-react";
 import { MetricCard } from "@/components/overview/metric-card";
@@ -33,6 +35,7 @@ import { EscalationsSkeleton } from "./escalations-skeleton";
 import { EscalationsTable } from "./escalations-table";
 
 export function EscalationsExplorer() {
+  const { timeZone } = useDashboardSettings().settings;
   const { tickets, error, loading, refreshing, updatedAt, truncated, refresh } =
     useTickets();
   const [filters, setFilters] = useState<EscalationFilters>(
@@ -84,10 +87,7 @@ export function EscalationsExplorer() {
           {updatedAt && (
             <span className="text-xs text-muted-foreground">
               Updated{" "}
-              {updatedAt.toLocaleTimeString("en-GB", {
-                hour: "2-digit",
-                minute: "2-digit",
-              })}
+              {formatClock(updatedAt, timeZone)}
             </span>
           )}
           <Button

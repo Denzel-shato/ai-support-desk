@@ -4,7 +4,7 @@
 | Where | What | How it reaches Firestore |
 |---|---|---|
 | Browser | Dashboard pages (no data in the HTML), fetches `/api/*` with an httpOnly session cookie | **Never.** No Firebase client SDK, no Firebase Auth, no `NEXT_PUBLIC_FIREBASE_*` |
-| Next.js API routes | Tickets, review/approve, send, reconcile, follow-ups, knowledge base, settings status | Firebase **Admin SDK** (bypasses rules), after `requireAuth` |
+| Next.js API routes | Tickets, review/approve, send, reconcile, follow-ups, knowledge base, settings status, dashboard preferences (`/api/settings`, collection `app_settings`) | Firebase **Admin SDK** (bypasses rules), after `requireAuth` |
 | n8n intake workflow | Public form, KB read, ticket create, rate limiting (`rate_limits`) | Service account (bypasses rules) |
 | n8n Send Response workflow | Sends the approved email, writes `n8n_send_log` | Service account (bypasses rules) |
 

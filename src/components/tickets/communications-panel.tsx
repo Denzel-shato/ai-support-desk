@@ -1,5 +1,6 @@
 "use client";
 
+import { useDashboardSettings } from "@/components/settings/settings-context";
 import { useState } from "react";
 import {
   AlertTriangle,
@@ -48,7 +49,8 @@ function HistoryItem({
 }) {
   const [confirming, setConfirming] = useState(false);
   const pill = entry.status ? STATUS_PILL[entry.status] : null;
-  const when = formatDateTime(entry.sentAt ?? entry.createdAt);
+  const { timeZone } = useDashboardSettings().settings;
+  const when = formatDateTime(entry.sentAt ?? entry.createdAt, timeZone);
   const isFollowUp = entry.type === "follow_up";
   const retrying = busy === entry.id;
 

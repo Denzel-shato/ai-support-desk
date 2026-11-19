@@ -1,5 +1,12 @@
 # Changelog
 
+## Dashboard: greeting, search, settings, polish
+
+- The overview greeting is now time-aware (morning 05:00-11:59, afternoon 12:00-16:59, evening 17:00-04:59) in the chosen time zone and updates without a reload.
+- Header search was decorative; it now opens All tickets with the query (`/tickets?q=`). Ticket search also matches the category. Filtering stays client-side over the already-loaded list (no request per keystroke).
+- Settings gained saved **Preferences** (`/api/settings`, Firestore `app_settings/dashboard`): time zone, background refresh interval, default ticket order. Validated server-side, persisted, applied across the dashboard; failed saves keep the draft.
+- Tests: `tests/dashboard.test.ts` (+ new route in the auth tests). Components are not rendered in tests; see `docs/dashboard.md` for what was checked in a real browser.
+
 ## Security audit (Firestore rules and API)
 
 - Added `firestore.rules` (deny all client/REST access; the app and n8n use service accounts) and `firebase.json`. **Must be deployed manually.** Previously the repo had no rules.

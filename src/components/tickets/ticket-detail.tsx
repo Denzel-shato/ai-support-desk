@@ -1,5 +1,7 @@
 "use client";
 
+import { useDashboardSettings } from "@/components/settings/settings-context";
+import { formatDateTime } from "@/lib/ticket-detail";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useMemo, useState } from "react";
@@ -100,6 +102,9 @@ function TicketDetailBody({
   ticket: SupportTicketRecord;
   onTicketChange: (ticket: SupportTicketRecord) => void;
 }) {
+  const { timeZone } = useDashboardSettings().settings;
+  const createdLabel = formatDateTime(t.createdAt, timeZone);
+  const escalatedLabel = formatDateTime(t.escalatedAt, timeZone);
   const hasKb =
     t.kbStatus ||
     t.relevantSection ||
@@ -117,7 +122,7 @@ function TicketDetailBody({
           <PriorityBadge priority={t.priority} />
           <StatusBadge status={t.status} />
           <span className="text-xs text-muted-foreground">
-            {t.createdLabel ? `Created ${t.createdLabel}` : "Creation date not recorded"}
+            {createdLabel ? `Created ${createdLabel}` : "Creation date not recorded"}
           </span>
         </div>
       </Card>
@@ -199,7 +204,7 @@ function TicketDetailBody({
                 <span className="break-all">{t.id}</span>
               </Field>
               <Field label="Created">
-                {t.createdLabel ?? <NotRecorded />}
+                {createdLabel ?? <NotRecorded />}
               </Field>
               <Field label="Status">
                 <StatusBadge status={t.status} />
@@ -228,8 +233,8 @@ function TicketDetailBody({
               <Field label="Escalation reason">
                 <TextBlock value={t.escalationReason} />
               </Field>
-              {t.escalatedLabel && (
-                <Field label="Escalated at">{t.escalatedLabel}</Field>
+              {escalatedLabel && (
+                <Field label="Escalated at">{escalatedLabel}</Field>
               )}
               {/* Low/Medium ignore any stored reviewStatus (n8n sets it on those too). */}
               {!approvalRequired(t) ? (

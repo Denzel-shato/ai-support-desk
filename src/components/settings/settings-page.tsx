@@ -6,6 +6,9 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { PreferencesForm } from "./preferences-form";
+import { useDashboardSettings } from "./settings-context";
+import { formatClock } from "@/lib/dashboard-settings";
 import { useSettingsStatus } from "@/hooks/use-settings-status";
 import type { Integration, Level, Row } from "@/lib/settings-status";
 
@@ -96,19 +99,20 @@ function SettingsSkeleton() {
 export function SettingsPage() {
   const { status, error, loading, checking, recheck } = useSettingsStatus();
   const checkedAt = status ? new Date(status.checkedAt) : null;
+  const { timeZone } = useDashboardSettings().settings;
 
   return (
     <div className="space-y-5">
       <section className="flex flex-wrap items-end justify-between gap-3">
         <p className="max-w-2xl text-[13px] text-muted-foreground">
-          How this dashboard is set up and what it is connected to. Everything
-          here is read from the running application, never assumed.
+          Your dashboard preferences, and how it is set up and connected. The
+          system information is read from the running application, never assumed.
         </p>
         <div className="flex items-center gap-3">
           {checkedAt && !Number.isNaN(checkedAt.getTime()) && (
             <span className="text-xs text-muted-foreground">
               Checked{" "}
-              {checkedAt.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}
+              {formatClock(checkedAt, timeZone)}
             </span>
           )}
           <Button variant="outline" onClick={recheck} disabled={loading || checking}>
@@ -117,6 +121,10 @@ export function SettingsPage() {
           </Button>
         </div>
       </section>
+
+      <Section title="Preferences" description="Saved on the server, so they apply on every device you sign in from.">
+        <PreferencesForm />
+      </Section>
 
       {loading && <SettingsSkeleton />}
 
@@ -164,7 +172,7 @@ export function SettingsPage() {
 
           <Section
             title="Notifications"
-            description="Which emails the system sends, and where each one is controlled. There are no preferences to change here: these are not configurable from the dashboard."
+            description="Which emails the system sends, and where each one is controlled. These are not configurable from the dashboard."
           >
             <ul className="divide-y divide-border">
               {status.notifications.map((n) => (

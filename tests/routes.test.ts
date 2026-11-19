@@ -20,6 +20,8 @@ const routes: [string, string, () => Promise<{ default?: never } & Record<string
   ["knowledge-base", "GET", () => import("@/app/api/knowledge-base/route"), "GET"],
   ["knowledge-base", "POST", () => import("@/app/api/knowledge-base/route"), "POST"],
   ["knowledge-base/[id]", "PATCH", () => import("@/app/api/knowledge-base/[id]/route"), "PATCH"],
+  ["settings", "GET", () => import("@/app/api/settings/route"), "GET"],
+  ["settings", "PUT", () => import("@/app/api/settings/route"), "PUT"],
   ["settings/status", "GET", () => import("@/app/api/settings/status/route"), "GET"],
   ["auth/session", "GET", () => import("@/app/api/auth/session/route"), "GET"],
 ];

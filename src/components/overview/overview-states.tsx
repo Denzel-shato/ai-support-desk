@@ -1,3 +1,5 @@
+import { useDashboardSettings } from "@/components/settings/settings-context";
+import { formatClock } from "@/lib/dashboard-settings";
 import { AlertTriangle, Inbox, RefreshCw, WifiOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { TicketsApiError } from "@/lib/api/tickets";
@@ -129,6 +131,7 @@ export function RefreshFailedNotice({
   error: TicketsApiError;
   updatedAt: Date | null;
 }) {
+  const { timeZone } = useDashboardSettings().settings;
   return (
     <div
       role="alert"
@@ -138,10 +141,7 @@ export function RefreshFailedNotice({
       <p>
         Couldn&apos;t refresh: {error.message}
         {updatedAt &&
-          ` Showing the data from ${updatedAt.toLocaleTimeString("en-GB", {
-            hour: "2-digit",
-            minute: "2-digit",
-          })}.`}
+          ` Showing the data from ${formatClock(updatedAt, timeZone)}.`}
       </p>
     </div>
   );

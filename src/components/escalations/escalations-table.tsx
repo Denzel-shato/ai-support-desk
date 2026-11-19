@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { PriorityBadge } from "@/components/overview/priority-badge";
 import type { EscalationRow } from "@/lib/escalations";
 import { statusMeta } from "@/lib/meta";
+import { useDashboardSettings } from "@/components/settings/settings-context";
 import { formatCreatedShort } from "@/lib/tickets-list";
 
 const th =
@@ -44,6 +45,7 @@ function Reason({ reason }: { reason: string | null }) {
 /** Table from md up, stacked list below it. Every row opens the ticket. */
 export function EscalationsTable({ rows }: { rows: EscalationRow[] }) {
   const router = useRouter();
+  const { timeZone } = useDashboardSettings().settings;
 
   return (
     <>
@@ -115,7 +117,7 @@ export function EscalationsTable({ rows }: { rows: EscalationRow[] }) {
                   {r.escalatedAt ? (
                     <>
                       <p className="text-[13px]">
-                        {formatCreatedShort(r.escalatedAt) ?? "Unknown date"}
+                        {formatCreatedShort(r.escalatedAt, timeZone) ?? "Unknown date"}
                       </p>
                       <p className="mt-0.5 text-xs text-muted-foreground">
                         {r.escalatedAgo}
@@ -159,7 +161,7 @@ export function EscalationsTable({ rows }: { rows: EscalationRow[] }) {
               <p className="mt-2 break-all text-xs text-subtle-foreground">
                 {r.id} · Escalated{" "}
                 {r.escalatedAt
-                  ? (formatCreatedShort(r.escalatedAt) ?? "date unknown")
+                  ? (formatCreatedShort(r.escalatedAt, timeZone) ?? "date unknown")
                   : "date not recorded"}
               </p>
             </Link>

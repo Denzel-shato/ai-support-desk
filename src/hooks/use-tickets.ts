@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useDashboardSettings } from "@/components/settings/settings-context";
 import { fetchTickets, TicketsApiError } from "@/lib/api/tickets";
 import type { SupportTicketRecord } from "@/lib/types";
 
@@ -42,6 +43,8 @@ export function useTickets(): UseTicketsResult {
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
   const [truncated, setTruncated] = useState(false);
   const controller = useRef<AbortController | null>(null);
+  const { settings } = useDashboardSettings();
+  const autoRefreshMinutes = settings.autoRefreshMinutes;
 
   /** Starts a request, cancelling any one still in flight. */
   const request = useCallback(() => {
@@ -72,6 +75,16 @@ export function useTickets(): UseTicketsResult {
     request();
     return () => controller.current?.abort();
   }, [request]);
+
+  // Optional background reload (a setting). Skipped while the tab is hidden, and a failed reload keeps the
+  // data on screen exactly like a manual refresh does.
+  useEffect(() => {
+    if (!autoRefreshMinutes) return;
+    const timer = setInterval(() => {
+      if (document.visibilityState === "visible") request();
+    }, autoRefreshMinutes * 60_000);
+    return () => clearInterval(timer);
+  }, [autoRefreshMinutes, request]);
 
   const refresh = useCallback(() => {
     setRefreshing(true);

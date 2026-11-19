@@ -1,5 +1,6 @@
 "use client";
 
+import { useDashboardSettings } from "@/components/settings/settings-context";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, CheckCircle2, Loader2, Pencil, Plus, Power, RefreshCw, Search, SearchX, X } from "lucide-react";
 import { RefreshFailedNotice } from "@/components/overview/overview-states";
@@ -61,7 +62,8 @@ function ArticleReader({
 }) {
   const [confirming, setConfirming] = useState(false);
   const isActive = article.active === true;
-  const updated = formatDateTime(article.updatedAt);
+  const { timeZone } = useDashboardSettings().settings;
+  const updated = formatDateTime(article.updatedAt, timeZone);
   return (
     <Card>
       <CardHeader className="block space-y-3 pb-3">
