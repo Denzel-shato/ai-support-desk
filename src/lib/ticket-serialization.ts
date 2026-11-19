@@ -115,6 +115,12 @@ export const TICKET_API_FIELDS = [
   "responseError",
   "responseQueuedAt",
   "responseConfirmedBy",
+  // Not `statusBeforeResolution`: internal bookkeeping used to restore the
+  // status on reopen. The full history lives in the audit events.
+  "resolvedAt",
+  "resolvedBy",
+  "reopenedAt",
+  "reopenedBy",
 ] as const;
 
 const DATE_FIELDS = new Set([
@@ -122,6 +128,8 @@ const DATE_FIELDS = new Set([
   "escalatedAt",
   "responseSentAt",
   "responseQueuedAt",
+  "resolvedAt",
+  "reopenedAt",
 ]);
 
 /**

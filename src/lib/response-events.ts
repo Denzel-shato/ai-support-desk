@@ -26,7 +26,9 @@ export type ResponseEventType =
   | "reconciled"
   | "followup_claimed"
   | "followup_outcome"
-  | "followup_reconciled";
+  | "followup_reconciled"
+  | "ticket_resolved"
+  | "ticket_reopened";
 
 export function newEventRef(db: Firestore, ticketId: string) {
   return db

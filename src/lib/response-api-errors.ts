@@ -19,7 +19,12 @@ import {
  * violations carry their own status; config, id, not-found and timeout errors
  * reuse the ticket routes' mapping so every route reports them the same way.
  */
-export function responseErrorResponse(error: unknown, logLabel: string) {
+export function responseErrorResponse(
+  error: unknown,
+  logLabel: string,
+  /** Overrides the generic "couldn't save" text for routes where it doesn't fit. */
+  options: { saveFailureMessage?: string } = {},
+) {
   const auth = authErrorResponse(error);
   if (auth) return auth;
   if (error instanceof ResponseWorkflowError) {
@@ -61,7 +66,8 @@ export function responseErrorResponse(error: unknown, logLabel: string) {
   return serverError(
     500,
     "firestore_error",
-    "Something went wrong while saving to Firestore. Nothing was sent.",
+    options.saveFailureMessage ??
+      "Something went wrong while saving to Firestore. Nothing was sent.",
     logLabel,
     error,
   );

@@ -50,6 +50,11 @@ const CLOSED_STATUSES = new Set([
   "auto_resolved",
 ]);
 
+/** True when a stored `status` value means "finished" (any spelling/case). */
+export function isClosedStatus(value: unknown): boolean {
+  return CLOSED_STATUSES.has(key(value));
+}
+
 const PRIORITY_ALIASES: Record<string, Priority> = {
   urgent: "urgent",
   critical: "urgent",
@@ -68,6 +73,12 @@ export function normalizePriority(value: unknown): Priority {
 /*  Ticket predicates (the single source of truth for the metric cards)       */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * HISTORICAL: the workflow flagged this ticket for a person. It stays true
+ * after the ticket is resolved (`escalationStatus` is never rewritten), so
+ * "was it ever escalated?" and "is it still outstanding?" stay separate
+ * questions. Use `isActiveEscalation` for the latter.
+ */
 export function isEscalated(t: SupportTicketRecord): boolean {
   return key(t.escalationStatus) === "required";
 }
@@ -105,14 +116,24 @@ export function approvalRequired(t: ApprovalInput): boolean {
 /**
  * Waiting on a human decision. Only tickets that need approval can be: a Low
  * or Medium ticket carrying a legacy "awaiting_review" is not waiting for
- * anyone, so it is not counted or labelled as such.
+ * anyone, so it is not counted or labelled as such. A resolved ticket is not
+ * waiting for anyone either (its stored `reviewStatus` is kept as history).
  */
 export function isAwaitingReview(t: SupportTicketRecord): boolean {
-  return approvalRequired(t) && key(t.reviewStatus) === "awaiting_review";
+  return (
+    approvalRequired(t) &&
+    key(t.reviewStatus) === "awaiting_review" &&
+    !isResolved(t)
+  );
 }
 
 export function isResolved(t: SupportTicketRecord): boolean {
-  return CLOSED_STATUSES.has(key(t.status));
+  return isClosedStatus(t.status);
+}
+
+/** Escalated and not yet resolved: what still needs a person's attention. */
+export function isActiveEscalation(t: SupportTicketRecord): boolean {
+  return isEscalated(t) && !isResolved(t);
 }
 
 /** Not resolved. Includes escalated and awaiting-review tickets. */
@@ -120,11 +141,15 @@ export function isOpen(t: SupportTicketRecord): boolean {
   return !isResolved(t);
 }
 
-/** One status per ticket for the table, using a fixed precedence. */
+/**
+ * One status per ticket for the table, using a fixed precedence. "Resolved"
+ * comes first: a finished ticket is finished whether or not it was once
+ * escalated or reviewed (those facts are kept on the ticket as history).
+ */
 export function displayStatus(t: SupportTicketRecord): TicketStatus {
+  if (isResolved(t)) return "resolved";
   if (isEscalated(t)) return "escalated";
   if (isAwaitingReview(t)) return "awaiting_review";
-  if (isResolved(t)) return "resolved";
   if (key(t.status) === "new") return "new";
   return "open";
 }
@@ -234,7 +259,9 @@ export function buildMetrics(
 ): Metric[] {
   const total = tickets.length;
   const open = tickets.filter(isOpen).length;
-  const escalated = tickets.filter(isEscalated).length;
+  const everEscalated = tickets.filter(isEscalated);
+  const escalated = everEscalated.filter(isActiveEscalation).length;
+  const resolvedEscalations = everEscalated.length - escalated;
   const awaiting = tickets.filter(isAwaitingReview).length;
 
   const since = now.getTime() - 7 * DAY_MS;
@@ -260,10 +287,12 @@ export function buildMetrics(
     },
     {
       id: "escalated",
-      label: "Escalated tickets",
-      description: "Flagged by AI for human handling",
+      // Currently active only: a resolved escalation stays in the history
+      // (Escalations page) but is no longer outstanding.
+      label: "Active escalations",
+      description: "Escalated and not yet resolved",
       value: escalated,
-      footer: share(escalated, total),
+      footer: `${resolvedEscalations.toLocaleString("en-US")} resolved of ${everEscalated.length.toLocaleString("en-US")} escalated`,
     },
     {
       id: "awaiting_review",

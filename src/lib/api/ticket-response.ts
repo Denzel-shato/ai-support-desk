@@ -1,6 +1,7 @@
 import { redirectIfSignedOut, TicketsApiError } from "@/lib/api/tickets";
 import type { FollowUpMessage } from "@/lib/communications";
 import type { ReconcileOutcome, ReviewAction } from "@/lib/response-workflow";
+import type { ResolutionAction } from "@/lib/ticket-resolution";
 import type { ApiErrorBody, SupportTicketRecord } from "@/lib/types";
 
 /**
@@ -76,6 +77,28 @@ export async function reviewResponse(
   const { body, status } = await post(
     `/api/tickets/${encodeURIComponent(id)}/review`,
     finalResponse === undefined ? { action } : { action, finalResponse },
+  );
+  const ticket = ticketFrom(body);
+  if (!ticket) {
+    throw new TicketsApiError("The server returned data in an unexpected format.", {
+      code: "invalid_response",
+      status,
+    });
+  }
+  return ticket;
+}
+
+/**
+ * Resolves, or reopens, a ticket. Sends only the action: the server decides
+ * everything else, and never emails the customer for this. Returns the ticket.
+ */
+export async function changeResolution(
+  id: string,
+  action: ResolutionAction,
+): Promise<SupportTicketRecord> {
+  const { body, status } = await post(
+    `/api/tickets/${encodeURIComponent(id)}/resolution`,
+    { action },
   );
   const ticket = ticketFrom(body);
   if (!ticket) {

@@ -39,6 +39,7 @@ const mutating: [string, string, () => Promise<any>, unknown][] = [
   ["followup reconcile", "POST", () => import("@/app/api/tickets/[id]/followups/[messageId]/reconcile/route"), { outcome: "delivered" }],
   ["kb create", "POST", () => import("@/app/api/knowledge-base/route"), { title: "T", category: "C", content: "Body" }],
   ["kb update", "PATCH", () => import("@/app/api/knowledge-base/[id]/route"), { active: false }],
+  ["resolution", "POST", () => import("@/app/api/tickets/[id]/resolution/route"), { action: "resolve" }],
 ];
 const idRoutes: [string, string, () => Promise<any>, unknown][] = [
   ["ticket get", "GET", () => import("@/app/api/tickets/[id]/route"), undefined],

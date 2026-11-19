@@ -66,6 +66,19 @@ export interface SupportTicketRecord {
   responseQueuedAt?: string | null;
   /** "agent" when a person confirmed delivery by hand (reconciliation). */
   responseConfirmedBy?: string | null;
+
+  /* Explicit resolution (written only by POST /api/tickets/[id]/resolution).
+     Resolving sets `status` to "resolved"; escalation and review fields are
+     never touched, so a resolved ticket still records that it was escalated.
+     The full history (every resolve and reopen, with who and when) is kept in
+     the append-only `response_events` subcollection. */
+  /** When the ticket was resolved. null while it is not resolved (see the audit events for past resolutions). */
+  resolvedAt?: string | null;
+  /** Who resolved it (the signed-in dashboard user). null while not resolved. */
+  resolvedBy?: string | null;
+  /** The most recent reopening, kept after the ticket is resolved again. */
+  reopenedAt?: string | null;
+  reopenedBy?: string | null;
 }
 
 /** Error body returned by GET /api/tickets on any non-2xx response. */

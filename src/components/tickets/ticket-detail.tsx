@@ -16,6 +16,7 @@ import { approvalRequired } from "@/lib/response-workflow";
 import { buildTicketDetail, type TicketDetailView } from "@/lib/ticket-detail";
 import type { SupportTicketRecord } from "@/lib/types";
 import { CommunicationsPanel } from "./communications-panel";
+import { ResolutionPanel } from "./resolution-panel";
 import { ResponseWorkspace } from "./response-workspace";
 import { TicketDetailError, TicketDetailSkeleton } from "./ticket-detail-states";
 
@@ -105,6 +106,8 @@ function TicketDetailBody({
   const { timeZone } = useDashboardSettings().settings;
   const createdLabel = formatDateTime(t.createdAt, timeZone);
   const escalatedLabel = formatDateTime(t.escalatedAt, timeZone);
+  const resolvedLabel = formatDateTime(t.resolvedAt, timeZone);
+  const reopenedLabel = formatDateTime(t.reopenedAt, timeZone);
   const hasKb =
     t.kbStatus ||
     t.relevantSection ||
@@ -125,6 +128,7 @@ function TicketDetailBody({
             {createdLabel ? `Created ${createdLabel}` : "Creation date not recorded"}
           </span>
         </div>
+        <ResolutionPanel ticket={ticket} onTicketChange={onTicketChange} />
       </Card>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
@@ -214,6 +218,26 @@ function TicketDetailBody({
                   </span>
                 )}
               </Field>
+              {t.resolved && (
+                <Field label="Resolved">
+                  {resolvedLabel ?? <NotRecorded />}
+                  {t.resolvedBy && (
+                    <span className="mt-0.5 block text-xs text-muted-foreground">
+                      By {t.resolvedBy}
+                    </span>
+                  )}
+                </Field>
+              )}
+              {t.reopenedAt && (
+                <Field label="Last reopened">
+                  {reopenedLabel ?? <NotRecorded />}
+                  {t.reopenedBy && (
+                    <span className="mt-0.5 block text-xs text-muted-foreground">
+                      By {t.reopenedBy}
+                    </span>
+                  )}
+                </Field>
+              )}
               <Field label="Priority">
                 <PriorityBadge priority={t.priority} />
               </Field>
@@ -235,6 +259,12 @@ function TicketDetailBody({
               </Field>
               {escalatedLabel && (
                 <Field label="Escalated at">{escalatedLabel}</Field>
+              )}
+              {/* History vs. now: the escalation record never changes; this says whether it is still outstanding. */}
+              {t.escalated && (
+                <Field label="Escalation now">
+                  {t.escalationActive ? "Active: not yet resolved" : "Resolved"}
+                </Field>
               )}
               {/* Low/Medium ignore any stored reviewStatus (n8n sets it on those too). */}
               {!approvalRequired(t) ? (

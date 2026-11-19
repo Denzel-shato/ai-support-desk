@@ -1,5 +1,12 @@
 import { formatDateLong } from "./dashboard-settings";
-import { displayStatus, isEscalated, normalizePriority } from "./overview";
+import {
+  displayStatus,
+  isActiveEscalation,
+  isEscalated,
+  isResolved,
+  normalizePriority,
+} from "./overview";
+import { toIsoOrNull } from "./ticket-serialization";
 import type {
   Priority,
   StringOrList,
@@ -100,8 +107,18 @@ export interface TicketDetailView {
   escalationReason: string | null;
   escalatedLabel: string | null;
   reviewStatus: string | null;
-  /** True when the AI/escalation fields mark this ticket as escalated. */
+  /** HISTORY: the AI/escalation fields mark this ticket as escalated. Stays true after resolution. */
   escalated: boolean;
+  /** Escalated and not resolved: still needs attention. */
+  escalationActive: boolean;
+
+  /** CURRENT STATE: the ticket is resolved (separate from `escalated`). */
+  resolved: boolean;
+  resolvedAt: string | null;
+  resolvedBy: string | null;
+  /** Last reopening, if any; kept after the ticket is resolved again. */
+  reopenedAt: string | null;
+  reopenedBy: string | null;
 }
 
 const STATUS_LABELS: Record<TicketStatus, string> = {
@@ -166,5 +183,12 @@ export function buildTicketDetail(t: SupportTicketRecord): TicketDetailView {
     escalatedLabel: formatDateTime(t.escalatedAt),
     reviewStatus: humanizeValue(t.reviewStatus),
     escalated: isEscalated(t),
+    escalationActive: isActiveEscalation(t),
+
+    resolved: isResolved(t),
+    resolvedAt: toIsoOrNull(t.resolvedAt),
+    resolvedBy: cleanText(t.resolvedBy),
+    reopenedAt: toIsoOrNull(t.reopenedAt),
+    reopenedBy: cleanText(t.reopenedBy),
   };
 }

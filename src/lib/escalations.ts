@@ -1,8 +1,9 @@
 import {
   displayStatus,
   formatSubmitted,
+  isActiveEscalation,
   isEscalated,
-  isOpen,
+  isResolved,
   normalizePriority,
   toTicketRow,
 } from "./overview";
@@ -16,7 +17,9 @@ import type { Metric, Priority, SupportTicketRecord, TicketStatus } from "./type
  *
  * A ticket belongs here when `escalationStatus` is "required" (the n8n
  * workflow's decision; see `isEscalated` in lib/overview.ts). Priority is never
- * used to decide that.
+ * used to decide that. Resolving a ticket does not remove it from this page
+ * (the escalation really happened); it only stops counting as ACTIVE, see
+ * `isActiveEscalation`. Escalation history and current resolution are separate.
  */
 
 /* -------------------------------------------------------------------------- */
@@ -46,6 +49,8 @@ export interface EscalationRow {
   escalatedAt: string | null;
   /** "12 min ago" style label for `escalatedAt`. */
   escalatedAgo: string | null;
+  /** The ticket has been resolved: this escalation is history, not outstanding. */
+  resolved: boolean;
   /** The ticket's stored `status`, humanised; null when the document has none. */
   statusLabel: string | null;
   /** Colour for the status dot (see `toEscalationRow`). */
@@ -68,6 +73,7 @@ export function toEscalationRow(
     reason: cleanText(t.escalationReason),
     escalatedAt,
     escalatedAgo: escalatedAt ? formatSubmitted(escalatedAt, now) : null,
+    resolved: isResolved(t),
     statusLabel: humanizeValue(t.status),
     // Every row on this page is escalated, so the usual derived status would
     // always say "Escalated". Derive the tone without the escalation flag so
@@ -86,6 +92,11 @@ export interface EscalationFilters {
   priority: "all" | "urgent" | "high";
   /** "all", or a category label exactly as shown in the table. */
   category: string;
+  /**
+   * "active" = not yet resolved, "resolved" = escalations that were resolved,
+   * "all" (default) = the full history.
+   */
+  status: "all" | "active" | "resolved";
   /** By escalation date (`escalatedAt`). */
   sort: SortOrder;
 }
@@ -94,11 +105,17 @@ export const DEFAULT_ESCALATION_FILTERS: EscalationFilters = {
   search: "",
   priority: "all",
   category: "all",
+  status: "all",
   sort: "newest",
 };
 
 export function hasActiveEscalationFilters(f: EscalationFilters): boolean {
-  return f.search.trim() !== "" || f.priority !== "all" || f.category !== "all";
+  return (
+    f.search.trim() !== "" ||
+    f.priority !== "all" ||
+    f.category !== "all" ||
+    f.status !== "all"
+  );
 }
 
 export interface IndexedEscalation {
@@ -164,6 +181,8 @@ export function applyEscalationFilters(
       if (filters.category !== "all" && row.category !== filters.category) {
         return false;
       }
+      if (filters.status === "active" && row.resolved) return false;
+      if (filters.status === "resolved" && !row.resolved) return false;
       return search === "" || matchesSearch(haystack, search);
     })
     .map(({ row }) => row)
@@ -192,40 +211,43 @@ function percent(count: number, total: number, of: string): string {
 /**
  * Four cards, all computed from the escalated tickets themselves.
  *
- * "Awaiting attention" means escalated and not yet resolved, using the same
- * resolved/closed statuses as "Open tickets" on the Overview. It relies on the
- * stored `status` being updated when someone finishes a ticket.
+ * The first is the HISTORICAL total (every ticket ever escalated, resolved or
+ * not). The other three describe CURRENT escalations: escalated and not yet
+ * resolved, using the same resolved/closed statuses as the Overview. A ticket
+ * resolved from its detail page stops counting in them straight away, while
+ * its escalation record stays in the total and in the table.
  */
 export function buildEscalationMetrics(
   allTicketCount: number,
   escalated: SupportTicketRecord[],
 ): Metric[] {
   const total = escalated.length;
-  const urgent = escalated.filter((t) => normalizePriority(t.priority) === "urgent").length;
-  const high = escalated.filter((t) => normalizePriority(t.priority) === "high").length;
-  const awaiting = escalated.filter(isOpen).length;
+  const active = escalated.filter(isActiveEscalation);
+  const urgent = active.filter((t) => normalizePriority(t.priority) === "urgent").length;
+  const high = active.filter((t) => normalizePriority(t.priority) === "high").length;
+  const awaiting = active.length;
 
   return [
     {
       id: "escalations_total",
       label: "Escalated tickets",
-      description: "Flagged by AI for human handling",
+      description: "Flagged for human handling, resolved or not",
       value: total,
       footer: percent(total, allTicketCount, "all tickets"),
     },
     {
       id: "escalations_urgent",
       label: "Urgent escalations",
-      description: "Escalated with urgent priority",
+      description: "Not yet resolved, urgent priority",
       value: urgent,
-      footer: percent(urgent, total, "escalations"),
+      footer: percent(urgent, awaiting, "active escalations"),
     },
     {
       id: "escalations_high",
       label: "High-priority escalations",
-      description: "Escalated with high priority",
+      description: "Not yet resolved, high priority",
       value: high,
-      footer: percent(high, total, "escalations"),
+      footer: percent(high, awaiting, "active escalations"),
     },
     {
       id: "escalations_awaiting_attention",
