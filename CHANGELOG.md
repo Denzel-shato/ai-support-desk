@@ -1,5 +1,14 @@
 # Changelog
 
+## Secure deployment configuration and placeholder protection (audit finding B2)
+
+- **Placeholders can no longer pass as configuration.** The escalation inbox (`REPLACE_WITH_ESCALATION_INBOX@example.com`, previously in two Gmail nodes) and the rate-limit salt (`CHANGE-ME-TO-A-LONG-RANDOM-STRING`, previously in `Rate limit settings`) now live in one new `Deployment config` Code node. It validates both (inbox: one plain mailbox, not a placeholder or reserved example/test domain; salt: 32-256 printable characters, enough variety, not a placeholder) and reports problem codes only.
+- **Fail closed.** New first steps `Deployment config` -> `Deployment config valid?`: an invalid configuration answers the visitor with the existing "try again later" text and then fails the execution (`Stop and Error`). No rate-limit claim, Gemini call, ticket or email happens. `Prepare rate limit` independently re-validates the salt and throws.
+- **One inbox for both staff emails.** `Send a message` (escalation) and `Send rescue email` read the validated inbox from `Deployment config`; no address is stored in either node.
+- Rate-limiting algorithm, limits, hashing and the Send Response workflow are unchanged. Hashes only change if you choose a different salt than the one you had.
+- Tests: `tests/deployment-config.test.ts` (placeholder, missing and malformed values, gate wiring, forged flags, placeholder inventory, secret hygiene); `tests/rate-limit.test.ts` harness now supplies a valid test configuration.
+- Docs: new `docs/n8n-deployment-config.md` (exact manual setup, how to generate a random salt, caveats). **Manual setup is required before the workflow will process submissions.** Not run in a real n8n 2.47.7.
+
 ## Secure automatic customer replies (audit finding B1)
 
 - **The model no longer writes anything that is emailed automatically.** A Low/Medium ticket is answered automatically only when the evaluation is complete, `kbStatus` is `covered`, `escalationRequired` is false, no unsupported parts remain, and every proposed step is found inside the article the model cites (by exact article ID, and title when given). The email text is a fixed template filled with the **article's own sentences**; the model's prose is stored only as a draft for agents.

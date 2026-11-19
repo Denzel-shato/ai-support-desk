@@ -261,6 +261,7 @@ test("graph: single linear path, ONE Firestore create, no upsert, every connecti
     "Claim refused?",
     "Claim slot",
     "Create a document",
+    "Deployment config valid?",
     "If",
     "Is duplicate submission",
     "Is our own earlier attempt",
@@ -383,7 +384,10 @@ test("non-text values (a hand-crafted POST) and control characters in name/email
 });
 
 test("graph: nothing that calls Gemini, Firestore or Gmail is reachable except through the 'valid' branch", () => {
-  assert.deepEqual(wf.connections["Form Trigger"].main[0].map((c: any) => c.node), ["Rate limit settings"]);
+  // Deployment gate first (tests/deployment-config.test.ts covers it in depth): only a valid configuration reaches the rest.
+  assert.deepEqual(wf.connections["Form Trigger"].main[0].map((c: any) => c.node), ["Deployment config"]);
+  assert.deepEqual(wf.connections["Deployment config"].main[0].map((c: any) => c.node), ["Deployment config valid?"]);
+  assert.deepEqual(wf.connections["Deployment config valid?"].main[0].map((c: any) => c.node), ["Rate limit settings"]);
   assert.deepEqual(wf.connections["Rate limit settings"].main[0].map((c: any) => c.node), ["Validate submission"]);
   assert.deepEqual(wf.connections["Validate submission"].main[0].map((c: any) => c.node), ["Is submission valid"]);
   const gate = wf.connections["Is submission valid"].main.map((b: any[]) => b.map((c) => c.node));

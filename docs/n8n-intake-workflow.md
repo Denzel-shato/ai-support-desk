@@ -28,7 +28,7 @@ aggregation, because a Code node in "all items" mode does not preserve n8n's ite
    The proposal sends the acknowledgement to `{{ $json.customerEmail }}` (the stored customer). If you
    still want test mode, put your own address back in that node. **Importing this and activating it will
    email real customers.**
-2. **Escalation recipient** is the placeholder `REPLACE_WITH_ESCALATION_INBOX@example.com`: set it.
+2. **Escalation recipient** is no longer stored in the Gmail nodes. It is set in the `Deployment config` node (placeholder `REPLACE_WITH_ESCALATION_INBOX@example.com`, refused until replaced). See [n8n-deployment-config.md](n8n-deployment-config.md).
 3. **High/Urgent tickets now get `reviewStatus: "awaiting_review"`** at creation (previously the
    escalation branch wrote no `reviewStatus`). Low/Medium still get it as before; the dashboard ignores it for them.
 4. **HTML escaping.** Customer and model text is HTML-escaped once (Prepare email fields) before it is
@@ -137,7 +137,7 @@ tickets, Gemini calls and (Low/Medium) acknowledgement emails. Execution data fo
 - **Normalised email:** lower-case, `+tag` removed, Gmail/googlemail dots removed. Other domains keep dots.
 - **Outcomes:** granted -> `Respond to form (accepted)` (the unchanged "submitted and is now being processed" text) -> Gemini etc. exactly as before.
   Limited -> polite "several requests, try again later" and the run **ends** (no Gemini, KB, ticket, escalation or customer email). Limiter unavailable -> see below.
-- **All numbers and messages live in `Rate limit settings`** (one node). Values are clamped (limit 1-20, window 10-86400 s).
+- **All numbers and messages live in `Rate limit settings`** (one node); the salt and staff inbox live in `Deployment config`. Values are clamped (limit 1-20, window 10-86400 s).
 
 ### Chosen initial limits (please tune)
 | Check | Limit | Window | Why |
@@ -155,7 +155,7 @@ would silently remove abuse protection exactly when Firestore is struggling. Set
 separate route/message/rescue kind, so they are distinguishable from Gemini, ticket-save and email failures.
 
 ### Privacy and retention
-Only salted SHA-256 hashes of IP and email appear in the document id; documents hold `kind, slot, createdAt, expireAt`. Replace the placeholder `salt`.
+Only salted SHA-256 hashes of IP and email appear in the document id; documents hold `kind, slot, createdAt, expireAt`. The salt is set in `Deployment config`, not here; a placeholder or weak salt stops the run (see [n8n-deployment-config.md](n8n-deployment-config.md)).
 Each document expires `window + retentionGraceSeconds` after window end. Correctness never depends on deletion (the window is in the id). Enable a Firestore **TTL
 policy** on collection group `rate_limits`, field `expireAt`, to delete them (deletion is typically within about a day).
 n8n execution data will still contain request headers (including the IP) for as long as your execution retention keeps it.
@@ -178,10 +178,10 @@ service for the form), which is why it is generous. A limiter outage with fail-c
   real browser (only HTTP responses were checked), live Gemini/Gmail, TTL deletion, and the public URL change (v2.1 serves `/form/support-request` once n8n assigns a webhookId on import).
 
 ### Manual steps
-1. Set a real random `salt` in `Rate limit settings`.
+1. Set a real random salt (and the staff inbox) in `Deployment config`, following [n8n-deployment-config.md](n8n-deployment-config.md).
 2. Confirm your proxy sets `X-Forwarded-For` (or switch `ipSource.header`, e.g. `cf-connecting-ip`, hops 1) and that clients cannot inject the last entry.
 3. Create the Firestore TTL policy on `rate_limits.expireAt`; the service account used by n8n needs create rights (it bypasses rules; the dashboard doesn't use this collection).
-4. Set the staff inbox on the rescue email node as for escalations; confirm the credential on `Claim slot`.
+4. The rescue email uses the same inbox as escalations (from `Deployment config`); confirm the credential on `Claim slot`.
 5. Import into a **test** n8n and Firestore project, submit from a real browser, check the three messages render, then exceed each limit and test a simultaneous burst.
 
 ## Reliability layer (retries, duplicates, rescue emails)
@@ -199,8 +199,8 @@ Send Response workflow are unchanged. High/Urgent tickets still go to staff only
 | Rescue email | Escaped submission (name, email, message), ticket ID, priority, shortened error text (max 300 chars), n8n execution ID, and what to do. Subject says which failure happened. Goes to the **same inbox as escalations**. |
 | Attribution | n8n's "sent automatically with n8n" line is turned off on all three Gmail nodes. |
 
-**You must set the staff inbox in TWO places:** `Send a message` (escalation) and `Send rescue email`. Both ship with
-`REPLACE_WITH_ESCALATION_INBOX@example.com`; a test asserts they are equal in the JSON, so don't change just one.
+**The staff inbox is set in ONE place:** the `Deployment config` node. `Send a message` (escalation) and `Send rescue email` both read it from there, and a test asserts
+they use the identical expression. The placeholder `REPLACE_WITH_ESCALATION_INBOX@example.com` is refused until you replace it.
 
 ### Known limits of the duplicate protection
 - The window is a clock hour: a repeat that straddles the hour boundary can create a second ticket. A genuinely new message always gets a new ID.
