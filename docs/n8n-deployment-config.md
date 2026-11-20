@@ -51,7 +51,8 @@ whatever value results.
 - An exported or backed-up workflow contains the real values. **Never export the live workflow to Git or share it.** Re-importing the repository JSON over the live
   workflow puts the placeholders back, and the workflow then refuses to run until you set them again.
 - Execution data of `Deployment config` (and of nodes that pass its item on) contains the salt and inbox while that execution is kept. Keep execution retention short
-  and consider turning off "Save successful production executions".
+  and keep execution retention short. **Do not turn off "Save successful production executions" for this workflow**: B5 keeps a suppressed rescue submission only in a
+  "successful" execution's data. See [n8n-failure-alerts.md](n8n-failure-alerts.md), "Execution data".
 
 ## Manual setup (do this in a test n8n first)
 

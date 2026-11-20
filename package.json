@@ -9,7 +9,8 @@
     "lint": "eslint",
     "test": "node --experimental-transform-types --disable-warning=ExperimentalWarning --import ./tests/register.mjs --test \"tests/*.test.ts\"",
     "typecheck": "tsc --noEmit",
-    "auth:hash": "node scripts/hash-password.mjs"
+    "auth:hash": "node scripts/hash-password.mjs",
+    "ttl:check": "node --env-file=.env.local scripts/check-rate-limit-ttl.mjs"
   },
   "dependencies": {
     "@fontsource-variable/schibsted-grotesk": "^5.3.0",

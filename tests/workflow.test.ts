@@ -252,15 +252,19 @@ test("graph: single linear path, ONE Firestore create, no upsert, every connecti
     for (const branch of c.main) for (const to of branch) assert.ok(names.has(to.node), `${from} -> ${to.node}`);
   }
   // Only these nodes fan out: the validity gate, the escalation split into the two notification emails,
-  // and the failure handling added for reliability (error outputs of Create/Gmail, duplicate/conflict decisions).
+  // and the failure handling added for reliability (error outputs of Create/Gmail, duplicate/conflict decisions,
+  // and of the Code nodes that run after the visitor was told "submitted": they end in the rescue email).
   // The happy path itself stays linear; see tests/intake-reliability.test.ts for the failure branches.
   const fanOut = Object.entries<any>(wf.connections).filter(([, c]) => c.main.length > 1 || c.main[0].length > 1);
   assert.deepEqual(fanOut.map(([n]) => n).sort(), [
+    "Build ticket",
+    "Check existing ticket",
     "Claim granted?",
     "Claim next slot?",
     "Claim refused?",
     "Claim rescue slot",
     "Claim slot",
+    "Classify create error",
     "Create a document",
     "Deployment config valid?",
     "If",
@@ -269,9 +273,11 @@ test("graph: single linear path, ONE Firestore create, no upsert, every connecti
     "Is submission valid",
     "Is write conflict",
     "Owned?",
+    "Prepare email fields",
     "Release pending?",
     "Rescue next slot?",
     "Rescue suppressed?",
+    "Select active articles",
     "Send a message",
     "Send a message1",
     "Send rescue email",

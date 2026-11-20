@@ -118,6 +118,33 @@ tickets, Gemini calls and (Low/Medium) acknowledgement emails. Execution data fo
 - Prompt injection can still corrupt classification (priority, category) and summaries; a wrongly Low priority only affects whether the grounded template is sent.
 - Verified only by tests that run the Code nodes in Node. The n8n Firestore node's returned types (booleans, arrays) and `$('Select active articles')` access must be confirmed in a real n8n run: the second gate fails closed (everything goes to staff) if they differ.
 
+## Gemini models (audit finding B10)
+
+**Checked against Google's official pages on 2026-11-19** ([models](https://ai.google.dev/gemini-api/docs/models), [deprecations](https://ai.google.dev/gemini-api/docs/deprecations)). The deprecations page lists the **earliest** possible shutdown date; Google says the exact date is announced with notice.
+
+| Node | Was | Status per Google | Now |
+|---|---|---|---|
+| `Message a model1` (evaluation) | `gemini-3-flash-preview` | **Preview**; on the deprecations page with no shutdown date yet and `gemini-3.6-flash` as the recommended replacement | `gemini-3.6-flash` (**Stable**, no shutdown date announced; Google's own named replacement) |
+| `Message a model` (classification) | `gemini-3.1-flash-lite` | **Stable**, but deprecated: earliest shutdown **2027-05-07**, recommended replacement `gemini-3.5-flash-lite` | **unchanged** |
+
+**Why this model and not "the newest".** `gemini-3.6-flash` was chosen because it is stable *and* the replacement Google names for the exact model we used, not because of its version number. A newer stable Flash exists (`gemini-3.8-flash`); it was not chosen. Google also lists some endpoints (for example `gemini-3.5-flash`, `gemini-3.7-flash`) that **automatically route to a newer model**: never put an alias like that, or `-latest`, in this workflow, because the behaviour behind it can change without notice. Even a pinned stable id can be retired, which is why the dates above matter.
+
+**Why classification was not changed now.** It is stable and has at least until 2027-05-07. It decides `priority`, which decides High/Urgent escalation, so swapping it without a live comparison would change safety-relevant behaviour for no current benefit. Plan the move to `gemini-3.5-flash-lite` (or whatever Google then names) well before that date, with the smoke test below. A test (`B10: DEADLINE TRIPWIRE`) **fails once the date has passed** so this cannot be forgotten; it tells you which page to re-read.
+
+**What was verified about the integration** (n8n 2.47.7 source, `GoogleGemini` node): the model is addressed as `models/<id>`; with the default "simplify" output each candidate is one item with `content.parts`; no `responseMimeType` is sent unless "Output content as JSON" is enabled (it is not; JSON is requested in the prompt and parsed and validated by `Build ticket`), and no thinking setting is sent unless you set one. **Compatibility change made:** `Build ticket` used to read only `parts[0].text`. It now joins every plain text part and ignores reasoning ("thought") parts, so a model that splits its answer or puts a non-text part first still parses; anything that does not parse fails safe to human review exactly as before. The prompts, output schemas and the B1 grounding are unchanged.
+
+**Required n8n configuration:** after import, re-select your Gemini credential on both nodes, then open `Message a model1` and confirm the model list shows **Gemini 3.6 Flash** for your API key (the list comes from Google's API; availability can depend on key and region). If it does not appear, choose "By ID" and enter `models/gemini-3.6-flash`. If the model is unavailable the node's error output is not used (`continueRegularOutput`), the evaluation is recorded as failed, and the ticket goes to a human: nothing is lost, but **every** ticket would then need review, so check this before going live.
+
+**Live smoke test (do this in your test n8n, with Gmail stubbed or pointed at a mailbox you own).** Send at least 10 realistic submissions: clearly covered by a knowledge-base article, partially covered, not covered, urgent, and several that try to inject instructions. Check for each: classification is valid JSON with a sensible `priority`; `intakeIssue` is empty (no `classification_failed`, `evaluation_failed`, `evaluation_invalid`); covered ones cite a real `relevantArticleId` with word-for-word steps and are auto-replied (`groundingIssue` empty) while the rest are held for a human; compare the share auto-replied with what you expect. Record the model id, the date and the results.
+
+Not verified: any live Gemini behaviour, answer quality or priority accuracy of `gemini-3.6-flash` on these prompts, its price, quota or latency, and its availability for your account and region. A stable model id existing in Google's documentation is not evidence that it is enabled for your key.
+
+## Failure alerting and execution data (audit finding B8)
+
+Code nodes that can fail after the visitor is told "submitted" now have error outputs into the rescue email; a failure-alert workflow reports anything unhandled; execution-data
+settings are explicit. The manual setup, the retention trade-off (successful executions must be kept because of B5), backup and recovery are in
+[n8n-failure-alerts.md](n8n-failure-alerts.md).
+
 ## Rate limiting
 
 ### What the Form Trigger gives us (inspected in n8n 2.47.7)
@@ -184,6 +211,63 @@ Only salted SHA-256 hashes of IP and email appear in the document id; documents 
 Each document expires `window + retentionGraceSeconds` after window end. Correctness never depends on deletion (the window is in the id). Enable a Firestore **TTL
 policy** on collection group `rate_limits`, field `expireAt`, to delete them (deletion is typically within about a day).
 n8n execution data will still contain request headers (including the IP) for as long as your execution retention keeps it.
+
+### Firestore TTL (audit finding B6)
+
+**Finding: disproven at the code level, not verified live.** The audit asked whether `expireAt` could be stored as an ISO *string* (which TTL ignores). The n8n 2.47.7 Firestore node converts every string that is strict ISO-8601 (and contains `-`, `T` or `:`) into a Firestore **Timestamp** (`jsonToDocument` in the node's `GenericFunctions.ts`). Every `expireAt` this workflow writes is a canonical UTC string such as `2026-11-19T11:15:00.000Z`, so by that code it is stored as a Timestamp. **That is a reading of n8n's source, not an observation of your database.**
+
+Every workflow node that writes to `rate_limits` (all four set `expireAt`; a test fails if a fifth appears without one):
+
+| Node | Document id | Written fields |
+|---|---|---|
+| `Claim slot` | `rl_<kind>_<hash>_<window>_<slot>` | `kind, slot, createdAt, expireAt, claimId` |
+| `Claim rescue slot` | `rs_limiter_<window>_<slot>` | `kind, slot, createdAt, expireAt` |
+| `Record held submission` | `held_<execution>_<window>` | `kind, reason, executionId, createdAt, expireAt` |
+| `Record failed notification` | `held_<execution>_email_failed` | `kind, reason, executionId, createdAt, expireAt` |
+
+A column the Code node forgets to produce is written by the node as `null`, which silently disables TTL for that document; the tests check that every column of every writer is produced. Tests also check the format, that each expiry is in the future and after `createdAt`, that limiter slots outlive their window by at least 5 minutes (B4), and that held records last the configured `heldRetentionSeconds` (default 30 days). They use a port of the node's serialisation, not the real node.
+
+**The exact TTL policy to create** (collection group and field must match; the field must hold Timestamps, anything else is ignored by TTL):
+
+```
+gcloud firestore fields ttls update expireAt --collection-group=rate_limits --enable-ttl
+gcloud firestore fields ttls list --collection-group=rate_limits
+```
+
+or in the Firebase/Google Cloud console: Firestore → Time-to-live → create a policy for collection group `rate_limits`, field `expireAt`. You need permission to manage indexes. Google documents deletion as typically within about a day after expiry, not instantly. This covers the `rl_`, `rs_limiter_` and `held_` documents. Correctness never depends on deletion (the window is in the id); TTL is storage and privacy hygiene.
+
+**Check the real thing** (read-only; needs the same `FIREBASE_*` variables the dashboard uses; run it after at least one test submission):
+
+```
+npm run ttl:check
+```
+
+It samples up to 300 `rate_limits` documents and reports the type of `expireAt` (Timestamp, string, number or missing) and how many documents are more than 48 hours past expiry but still present. It prints no document ids, hashes or credentials and changes nothing. It cannot prove a policy exists; use the `list` command for that. Exit code 0 means every sampled value is a Timestamp and nothing is overdue.
+
+Not verified: that a TTL policy exists in your project, the actual stored type in your database, and that deletion happens.
+
+### Trusted proxy and client IP (audit finding B9)
+
+**What the code trusts.** Only the header named in `ipSource.header` (default `x-forwarded-for`), and in it only **the entry `trustedProxyHops` from the right** (default `1`: the last entry). Entries further left are client-supplied and ignored. If the header has fewer entries than `trustedProxyHops`, or more than 20 entries, or is longer than 512 characters, nothing in it is trusted. The IP is hashed with the salt before storage and never stored or echoed.
+
+**The hop count was not guessed or changed.** `trustedProxyHops` must equal the number of proxies **you control** between the internet and n8n that each append the connecting address. It cannot be derived from the code; it depends on your hosting. Examples (illustrative, not your topology): with one reverse proxy appending to `X-Forwarded-For`, use `1`. With a CDN in front of your own proxy, the CDN's address is the last entry and the client the second-last, so you need `2`; with `1` every visitor would be seen as the CDN. If the value is too large, everyone falls into the shared `unknown` bucket (`unknownIp`: 20 per hour for the whole site); too small, everyone behind one proxy shares one bucket. A single-value header written by your edge (for example `cf-connecting-ip`) can be used instead, **only** if n8n accepts traffic from that edge and nothing else.
+
+**n8n's own `N8N_PROXY_HOPS`** (Express "trust proxy") is a separate setting. It affects how n8n itself interprets forwarded headers; this workflow reads the raw header in a Code node and does not use it. Keep it consistent with your topology, but it does not replace `trustedProxyHops`. Whether n8n leaves the `headers` object the Form Trigger exposes untouched was not verified: check it with the procedure below.
+
+#### Direct access to n8n
+
+If a client can reach n8n without passing through your proxy, it writes the whole header itself and can choose any "client IP" per request, which defeats the per-IP limit (a test demonstrates this and is named `KNOWN LIMITATION`). The global limit and the per-email limit still apply. The code cannot detect it; only the network setup can prevent it. Requirements: n8n listens only on a private interface or localhost, or a firewall/security group/private network allows connections to its port **only from your proxy**, or you use a tunnel that opens no public port; the proxy **appends** the real connecting address to `X-Forwarded-For` (for example nginx `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`) rather than trusting what the client sent; and the form's public URL goes only through that proxy.
+
+**How malformed or unusual values are handled** (tested): ports (`1.2.3.4:5678`, `[2001:db8::1]:443`), brackets, leading zeros and IPv4-mapped IPv6 (`::ffff:1.2.3.4`, also `::ffff:102:304`) are normalised to the same client; IPv6 is counted per /64. Private, loopback, link-local, carrier-grade NAT, multicast, reserved, unspecified and unique-local addresses, IPv4-compatible `::a.b.c.d`, zone ids, garbage, empty values and non-string header values are **not trusted** and count in the shared `unknown` bucket. Missing header or no `headers` object: also `unknown`.
+
+**Live verification procedure (for the later integration test; none of it has been done).** In a test n8n behind the real proxy topology:
+1. Open the form's **test** URL so the Form Trigger shows its output in the editor (test runs are not stored with the export's settings). Submit from a network whose public address you know. Read `headers['x-forwarded-for']`: the entry at position `trustedProxyHops` from the right must be your real public address. Count entries to set the number.
+2. Repeat with a forged header: `curl -H 'X-Forwarded-For: 203.0.113.50' ...` through the public URL. Your real address must still be the one at that position (the forgery sits to its left).
+3. From a machine outside your proxy, try to reach n8n's port directly (by its server address). It must fail.
+4. After a normal submission, open `Prepare rate limit`'s output: `rl.sourceKnown` must be `true` and the `ip` check present. Submit from a second network: the `ip` check's `key` must differ; from the same network again: it must match.
+5. If `sourceKnown` is `false` for real visitors, the hop count or header name is wrong.
+
+Not verified: your proxy topology, the real header contents, whether n8n is reachable directly, and n8n's header handling. These need your hosting.
 
 ### Retries and duplicates
 A legitimate retry after a rejection works once the window rolls over; a rejection claims no email slot, so it does not extend the block, and (B4) a refused submission

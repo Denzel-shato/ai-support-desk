@@ -286,14 +286,16 @@ function* files(dir: string): Generator<string> {
   }
 }
 
-test("inventory: outside docs, changelog and tests, the placeholders exist ONLY inside the 'Deployment config' node (and its JSON copy)", () => {
+test("inventory: outside docs, changelog and tests, the placeholders exist ONLY inside the 'Deployment config' node and the failure alert's 'Alert config' node (and their JSON copies)", () => {
   const found = new Set<string>();
   for (const f of files(ROOT)) {
     const rel = f.slice(ROOT.length);
     if (/^(docs|tests)\//.test(rel) || rel === "CHANGELOG.md") continue;
     if (/REPLACE_WITH_ESCALATION_INBOX|CHANGE-ME-TO-A-LONG-RANDOM-STRING/.test(readFileSync(f, "utf8"))) found.add(rel);
   }
-  assert.deepEqual([...found].sort(), ["n8n/ai-support-desk-automation.json", "n8n/code/deployment-config.js"]);
+  // The failure-alert workflow (B8) is a separate workflow and cannot read this one's node, so it carries its own copy of
+  // the INBOX placeholder only (never a salt placeholder) in its own 'Alert config' node. See tests/operational-readiness.test.ts.
+  assert.deepEqual([...found].sort(), ["n8n/ai-support-desk-automation.json", "n8n/ai-support-desk-failure-alert.json", "n8n/code/deployment-config.js", "n8n/code/failure-alert-config.js"]);
 });
 
 test("no real-looking secret or address is committed in workflow JSON, code, docs or env examples", () => {
