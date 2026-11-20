@@ -1,5 +1,5 @@
 {
-  "name": "AI Support Desk: send approved response (proposed, untested)",
+  "name": "AI Support Desk: send approved response",
   "nodes": [
     {
       "parameters": {

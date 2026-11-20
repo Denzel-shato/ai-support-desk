@@ -1,5 +1,5 @@
 {
-  "name": "AI Support Desk failure alert (proposed, untested)",
+  "name": "AI Support Desk failure alert",
   "nodes": [
     {
       "parameters": {},
