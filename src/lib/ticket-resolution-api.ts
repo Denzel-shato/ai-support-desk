@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import type { Firestore } from "firebase-admin/firestore";
 import { requireAuth } from "@/lib/auth/require-auth";
 import { applyResolutionAction } from "@/lib/firestore-ticket-resolution";
+import { invalidateTicketStats } from "@/lib/firestore-ticket-stats";
 import { InvalidTicketIdError, isValidDocumentId } from "@/lib/firestore-tickets";
 import { readJsonBody } from "@/lib/request-guard";
 import { responseErrorResponse } from "@/lib/response-api-errors";
@@ -32,6 +33,7 @@ export async function handleResolutionRequest(
 
     const action = parseResolutionRequest(await readJsonBody(request));
     const ticket = await applyResolutionAction(id, action, session.sub, deps.db, deps.nowMs);
+    invalidateTicketStats(); // the Overview counts changed: drop the cached aggregates
     return NextResponse.json({ ticket }, { status: 200, headers: NO_STORE });
   } catch (error) {
     return responseErrorResponse(error, "api/tickets/[id]/resolution", {

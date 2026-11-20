@@ -211,3 +211,31 @@ export interface KnowledgeArticle {
    */
   version: string | null;
 }
+
+/**
+ * Aggregate counters over EVERY ticket, folded one ticket at a time by
+ * `addToStats` (lib/overview.ts). It is small (a few numbers plus one entry
+ * per calendar day), so it can be computed server-side over a collection too
+ * big to hold in memory and sent to the browser as-is.
+ */
+export interface TicketStats {
+  total: number;
+  /** Not resolved (includes escalated and awaiting-review tickets). */
+  open: number;
+  resolved: number;
+  /** Escalated at any point, resolved or not (history). */
+  everEscalated: number;
+  /** Escalated and not resolved (current). */
+  activeEscalations: number;
+  activeUrgent: number;
+  activeHigh: number;
+  awaitingReview: number;
+  /** Created within 7 days before the stats were computed. */
+  createdLast7Days: number;
+  /** No usable creation date: counted in totals but in no day bucket. */
+  undated: number;
+  newestMs: number | null;
+  priority: Record<Priority, number>;
+  /** Tickets received / escalated per calendar day, keyed by day (see `localDayKeyOf`). */
+  byDay: Record<string, { received: number; escalated: number }>;
+}

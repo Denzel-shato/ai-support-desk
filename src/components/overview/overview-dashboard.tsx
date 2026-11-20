@@ -4,11 +4,10 @@ import { useMemo, useSyncExternalStore } from "react";
 import { RefreshCw } from "lucide-react";
 import { useDashboardSettings } from "@/components/settings/settings-context";
 import { Button } from "@/components/ui/button";
-import { TruncationNotice } from "@/components/ui/truncation-notice";
-import { MAX_TICKETS } from "@/lib/limits";
-import { useTickets } from "@/hooks/use-tickets";
+import { DataNotice } from "@/components/ui/truncation-notice";
+import { useOverviewStats } from "@/hooks/use-overview-stats";
 import { formatClock, greetingFor } from "@/lib/dashboard-settings";
-import { deriveOverview } from "@/lib/overview";
+import { deriveOverviewFromStats } from "@/lib/overview";
 import { MetricCard } from "./metric-card";
 import { OverviewSkeleton } from "./overview-skeleton";
 import {
@@ -36,13 +35,13 @@ function useGreeting(timeZone: string): string {
 export function OverviewDashboard() {
   const { timeZone } = useDashboardSettings().settings;
   const greeting = useGreeting(timeZone);
-  const { tickets, error, loading, refreshing, updatedAt, truncated, refresh } =
-    useTickets();
+  const { data, error, loading, refreshing, updatedAt, refresh } = useOverviewStats();
 
+  // Every number comes from server-side aggregates over ALL tickets; only the "recent" table lists tickets.
   // Relative times ("12 min ago") are computed once per fetch.
   const overview = useMemo(
-    () => (tickets && updatedAt ? deriveOverview(tickets, updatedAt) : null),
-    [tickets, updatedAt],
+    () => (data && updatedAt ? deriveOverviewFromStats(data.stats, data.recent, updatedAt) : null),
+    [data, updatedAt],
   );
 
   return (
@@ -74,7 +73,11 @@ export function OverviewDashboard() {
         </div>
       </section>
 
-      {truncated && <TruncationNotice noun="tickets" limit={MAX_TICKETS} />}
+      {data?.partial && (
+        <DataNotice>
+          This desk has more tickets than the dashboard will count in one pass, so these figures are a lower bound.
+        </DataNotice>
+      )}
 
       {loading && <OverviewSkeleton />}
 

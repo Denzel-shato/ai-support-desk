@@ -6,6 +6,7 @@ import type {
   PriorityShare,
   SupportTicketRecord,
   Ticket,
+  TicketStats,
   TicketStatus,
 } from "./types";
 
@@ -253,22 +254,100 @@ function share(count: number, total: number): string {
   return `${Math.round(pct)}% of all tickets`;
 }
 
-export function buildMetrics(
+/* -------------------------------------------------------------------------- */
+/*  Aggregate statistics                                                      */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Every Overview number is folded from tickets one at a time into a
+ * `TicketStats` (a handful of counters and one entry per calendar day), so the
+ * server can aggregate the WHOLE collection in a streaming pass without ever
+ * holding it in memory, and the browser can still aggregate a plain array.
+ * Both go through `addToStats`, which uses the predicates above: there is one
+ * definition of open / resolved / escalated / awaiting review, not two.
+ */
+export interface StatsContext {
+  /** "Now" for the last-7-days count. */
+  nowMs: number;
+  /** Calendar-day bucket for a timestamp, e.g. in the viewer's time zone. */
+  dayKeyOf: (ms: number) => string;
+}
+
+/** Day bucket in the machine's own time zone (what the browser charts have always used). */
+export function localDayKeyOf(ms: number): string {
+  return dayKey(new Date(ms));
+}
+
+export function emptyStats(): TicketStats {
+  return {
+    total: 0,
+    open: 0,
+    resolved: 0,
+    everEscalated: 0,
+    activeEscalations: 0,
+    activeUrgent: 0,
+    activeHigh: 0,
+    awaitingReview: 0,
+    createdLast7Days: 0,
+    undated: 0,
+    newestMs: null,
+    priority: { urgent: 0, high: 0, medium: 0, low: 0, unspecified: 0 },
+    byDay: {},
+  };
+}
+
+/** Adds one ticket to the running totals. Pure apart from mutating `stats`. */
+export function addToStats(
+  stats: TicketStats,
+  t: SupportTicketRecord,
+  ctx: StatsContext,
+): void {
+  stats.total += 1;
+  const resolved = isResolved(t);
+  if (resolved) stats.resolved += 1;
+  else stats.open += 1;
+
+  const priority = normalizePriority(t.priority);
+  stats.priority[priority] += 1;
+
+  const escalated = isEscalated(t);
+  if (escalated) {
+    stats.everEscalated += 1;
+    if (!resolved) {
+      stats.activeEscalations += 1;
+      if (priority === "urgent") stats.activeUrgent += 1;
+      if (priority === "high") stats.activeHigh += 1;
+    }
+  }
+  if (isAwaitingReview(t)) stats.awaitingReview += 1;
+
+  const ms = createdAtMs(t);
+  if (ms === null) {
+    stats.undated += 1;
+    return;
+  }
+  if (ms >= ctx.nowMs - 7 * DAY_MS && ms <= ctx.nowMs) stats.createdLast7Days += 1;
+  if (stats.newestMs === null || ms > stats.newestMs) stats.newestMs = ms;
+  const day = ctx.dayKeyOf(ms);
+  const bucket = (stats.byDay[day] ??= { received: 0, escalated: 0 });
+  bucket.received += 1;
+  if (escalated) bucket.escalated += 1;
+}
+
+export function statsFromTickets(
   tickets: SupportTicketRecord[],
   now: Date,
-): Metric[] {
-  const total = tickets.length;
-  const open = tickets.filter(isOpen).length;
-  const everEscalated = tickets.filter(isEscalated);
-  const escalated = everEscalated.filter(isActiveEscalation).length;
-  const resolvedEscalations = everEscalated.length - escalated;
-  const awaiting = tickets.filter(isAwaitingReview).length;
+): TicketStats {
+  const stats = emptyStats();
+  const ctx: StatsContext = { nowMs: now.getTime(), dayKeyOf: localDayKeyOf };
+  for (const t of tickets) addToStats(stats, t, ctx);
+  return stats;
+}
 
-  const since = now.getTime() - 7 * DAY_MS;
-  const lastWeek = tickets.filter((t) => {
-    const ms = createdAtMs(t);
-    return ms !== null && ms >= since && ms <= now.getTime();
-  }).length;
+export function metricsFromStats(stats: TicketStats): Metric[] {
+  const { total, open, awaitingReview: awaiting } = stats;
+  const escalated = stats.activeEscalations;
+  const resolvedEscalations = stats.everEscalated - stats.activeEscalations;
 
   return [
     {
@@ -276,7 +355,7 @@ export function buildMetrics(
       label: "Total tickets",
       description: "Every ticket in the support desk",
       value: total,
-      footer: `${lastWeek.toLocaleString("en-US")} in the last 7 days`,
+      footer: `${stats.createdLast7Days.toLocaleString("en-US")} in the last 7 days`,
     },
     {
       id: "open",
@@ -292,7 +371,7 @@ export function buildMetrics(
       label: "Active escalations",
       description: "Escalated and not yet resolved",
       value: escalated,
-      footer: `${resolvedEscalations.toLocaleString("en-US")} resolved of ${everEscalated.length.toLocaleString("en-US")} escalated`,
+      footer: `${resolvedEscalations.toLocaleString("en-US")} resolved of ${stats.everEscalated.toLocaleString("en-US")} escalated`,
     },
     {
       id: "awaiting_review",
@@ -302,6 +381,13 @@ export function buildMetrics(
       footer: share(awaiting, total),
     },
   ];
+}
+
+export function buildMetrics(
+  tickets: SupportTicketRecord[],
+  now: Date,
+): Metric[] {
+  return metricsFromStats(statsFromTickets(tickets, now));
 }
 
 /* -------------------------------------------------------------------------- */
@@ -316,21 +402,20 @@ const PRIORITY_ORDER: Priority[] = [
   "unspecified",
 ];
 
-export function buildPriorityDistribution(
-  tickets: SupportTicketRecord[],
-): PriorityShare[] {
-  const counts = new Map<Priority, number>();
-  for (const t of tickets) {
-    const p = normalizePriority(t.priority);
-    counts.set(p, (counts.get(p) ?? 0) + 1);
-  }
+export function priorityFromStats(stats: TicketStats): PriorityShare[] {
   return PRIORITY_ORDER.map((priority) => ({
     priority,
-    count: counts.get(priority) ?? 0,
+    count: stats.priority[priority] ?? 0,
   })).filter(
     // Always show the four real priorities; show "unspecified" only if used.
     (row) => row.priority !== "unspecified" || row.count > 0,
   );
+}
+
+export function buildPriorityDistribution(
+  tickets: SupportTicketRecord[],
+): PriorityShare[] {
+  return priorityFromStats(statsFromTickets(tickets, new Date(0)));
 }
 
 /* -------------------------------------------------------------------------- */
@@ -344,25 +429,20 @@ export function buildPriorityDistribution(
  * ends on the day of the newest ticket, so older demo data still shows its
  * real dates instead of an empty chart. Days with no tickets are genuine zeros.
  */
-export function buildActivity(
-  tickets: SupportTicketRecord[],
-  now: Date,
-): {
+export interface ActivityResult {
   points: ActivityPoint[];
   rangeLabel: string | null;
   total: number;
   undated: number;
-} {
-  const dated = tickets
-    .map((t) => ({ t, ms: createdAtMs(t) }))
-    .filter((row): row is { t: SupportTicketRecord; ms: number } => row.ms !== null);
-  const undated = tickets.length - dated.length;
+}
 
-  if (dated.length === 0) {
+export function activityFromStats(stats: TicketStats, now: Date): ActivityResult {
+  const undated = stats.undated;
+  const newest = stats.newestMs;
+  if (newest === null) {
     return { points: [], rangeLabel: null, total: 0, undated };
   }
 
-  const newest = Math.max(...dated.map((row) => row.ms));
   const windowStartForNow = startOfLocalDay(now).getTime() - 6 * DAY_MS;
   const anchor =
     newest >= windowStartForNow
@@ -375,21 +455,10 @@ export function buildActivity(
     days.push(new Date(end.getFullYear(), end.getMonth(), end.getDate() - i));
   }
 
-  const buckets = new Map<string, { received: number; escalated: number }>(
-    days.map((d) => [dayKey(d), { received: 0, escalated: 0 }]),
-  );
-
   let total = 0;
-  for (const { t, ms } of dated) {
-    const bucket = buckets.get(dayKey(new Date(ms)));
-    if (!bucket) continue;
-    bucket.received += 1;
-    if (isEscalated(t)) bucket.escalated += 1;
-    total += 1;
-  }
-
   const points = days.map((d) => {
-    const bucket = buckets.get(dayKey(d))!;
+    const bucket = stats.byDay[dayKey(d)] ?? { received: 0, escalated: 0 };
+    total += bucket.received;
     return {
       day: d.toLocaleDateString(LOCALE, { weekday: "short" }),
       dateLabel: d.toLocaleDateString(LOCALE, {
@@ -410,27 +479,51 @@ export function buildActivity(
   };
 }
 
+export function buildActivity(
+  tickets: SupportTicketRecord[],
+  now: Date,
+): ActivityResult {
+  return activityFromStats(statsFromTickets(tickets, now), now);
+}
+
 /* -------------------------------------------------------------------------- */
 /*  Entry point                                                               */
 /* -------------------------------------------------------------------------- */
 
 export const RECENT_TICKET_COUNT = 7;
 
-export function deriveOverview(
-  tickets: SupportTicketRecord[],
+/**
+ * Builds the Overview from aggregate stats (computed over every ticket) plus
+ * the newest few tickets for the "recent" table.
+ */
+export function deriveOverviewFromStats(
+  stats: TicketStats,
+  recent: SupportTicketRecord[],
   now: Date,
 ): OverviewData {
-  const activity = buildActivity(tickets, now);
+  const activity = activityFromStats(stats, now);
   return {
-    metrics: buildMetrics(tickets, now),
+    metrics: metricsFromStats(stats),
     activity: activity.points,
     activityRangeLabel: activity.rangeLabel,
     activityTotal: activity.total,
     undatedCount: activity.undated,
-    priorityDistribution: buildPriorityDistribution(tickets),
-    priorityTotal: tickets.length,
-    // The API already sorts newest-first; keep that order.
-    recent: tickets.slice(0, RECENT_TICKET_COUNT).map((t) => toTicketRow(t, now)),
-    total: tickets.length,
+    priorityDistribution: priorityFromStats(stats),
+    priorityTotal: stats.total,
+    // Newest first, as the server returns them.
+    recent: recent.slice(0, RECENT_TICKET_COUNT).map((t) => toTicketRow(t, now)),
+    total: stats.total,
   };
+}
+
+/** The same Overview from a plain array of tickets (newest first). */
+export function deriveOverview(
+  tickets: SupportTicketRecord[],
+  now: Date,
+): OverviewData {
+  return deriveOverviewFromStats(
+    statsFromTickets(tickets, now),
+    tickets.slice(0, RECENT_TICKET_COUNT),
+    now,
+  );
 }
