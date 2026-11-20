@@ -1,0 +1,113 @@
+{
+  "name": "AI Support Desk failure alert (proposed, untested)",
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "e1000000-0000-4000-8000-000000000001",
+      "name": "Error Trigger"
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code node \"Alert config\"  (mode: Run Once for All Items)   [workflow: AI Support Desk failure alert]\n//\n// The ONLY deployment-specific value of the failure-alert workflow: the staff inbox that receives failure alerts.\n// It is a separate workflow (n8n runs an error workflow on its own), so it cannot read the intake workflow's\n// 'Deployment config' node; set the SAME inbox here (docs/n8n-failure-alerts.md). Like that node, this one ships a\n// PLACEHOLDER on purpose and fails closed: while the value is a placeholder, missing or invalid this node THROWS, so\n// the alert run fails visibly and nothing is ever sent to a placeholder address. A bad value is never echoed.\n// Nothing in Git may hold a real address; set it inside the imported workflow in the n8n editor.\nconst CONFIG = {\n  alertInbox: 'REPLACE_WITH_ESCALATION_INBOX@example.com',\n};\n\nconst PLACEHOLDER_PATTERN = /replace[-_ ]?with|change[-_ ]?me|placeholder|your[-_ ]?(salt|secret|email|inbox|address)/i;\n\n// One plain mailbox: no display name, no list, no whitespace or line breaks, and never a reserved\n// example/test domain (RFC 2606 / 6761), which is what the shipped placeholder uses.\nconst RESERVED_DOMAIN = /(^|\\.)(example\\.(com|net|org)|example|test|invalid|localhost)$/i;\nconst EMAIL_PATTERN = /^[A-Za-z0-9!#$%&'*+/=?^_`|~-]+(?:\\.[A-Za-z0-9!#$%&'*+/=?^_`|~-]+)*@(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\\.)+[A-Za-z]{2,63}$/;\nfunction inboxProblems(value) {\n  if (typeof value !== 'string' || value.trim() === '') return ['escalation_inbox_missing'];\n  if (PLACEHOLDER_PATTERN.test(value)) return ['escalation_inbox_placeholder'];\n  if (value.length > 254 || value.split('@')[0].length > 64 || !EMAIL_PATTERN.test(value)) return ['escalation_inbox_invalid'];\n  if (RESERVED_DOMAIN.test(value.slice(value.lastIndexOf('@') + 1))) return ['escalation_inbox_placeholder'];\n  return [];\n}\n\nconst errors = inboxProblems(CONFIG.alertInbox);\nif (errors.length > 0) throw new Error(`Failure alert not sent: invalid alert inbox configuration (${errors.join(', ')})`);\nreturn [{ json: { ...$input.first().json, alertInbox: CONFIG.alertInbox } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        0
+      ],
+      "id": "e1000000-0000-4000-8000-000000000004",
+      "name": "Alert config"
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n Code node \"Prepare alert\"  (mode: Run Once for All Items)   [workflow: AI Support Desk failure alert]\n//\n// Runs after an Error Trigger: one of the AI Support Desk workflows failed in a way nothing handled. Builds a short\n// staff notification that contains NO customer data. n8n's Error Trigger supplies only the workflow name, the\n// execution id/url, the failing node and the error text. The error text is the only free-form part, so it is\n// shortened and e-mail addresses and links are masked before it is printed (a Gmail or Firestore error can echo\n// the address it was working with). The stack trace is never forwarded. Everything is HTML-escaped here.\nconst esc = (v) =>\n  String(v ?? '')\n    .replace(/&/g, '&amp;')\n    .replace(/</g, '&lt;')\n    .replace(/>/g, '&gt;')\n    .replace(/\"/g, '&quot;')\n    .replace(/'/g, '&#39;');\nconst one = (v, max) => String(v ?? '').replace(/[\\u0000-\\u001f\\u007f\\u2028\\u2029]+/g, ' ').replace(/\\s+/g, ' ').trim().slice(0, max);\nconst mask = (s) =>\n  s\n    .replace(/https?:\\/\\/\\S+/gi, '[link removed]')\n    .replace(/[^\\s@<>\"'()[\\],;]+@[^\\s@<>\"'()[\\],;]+/g, '[email removed]');\n\nconst e = $input.first().json ?? {};\nconst ex = e.execution && typeof e.execution === 'object' ? e.execution : {};\nconst wf = e.workflow && typeof e.workflow === 'object' ? e.workflow : {};\n\nconst workflowName = one(wf.name, 120) || 'Unknown workflow';\nconst failedNode = one(ex.lastNodeExecuted, 120) || 'Unknown node';\nconst executionId = one(ex.id, 40);\nconst mode = one(ex.mode, 20);\nconst errorText = mask(one(typeof ex.error === 'string' ? ex.error : (ex.error?.message ?? ex.error?.description ?? ''), 300));\n// Only an https link to the n8n editor is shown, and never one that carries a query string or credentials.\nconst rawUrl = one(ex.url, 300);\nconst url = /^https?:\\/\\/[^\\s?#@]+$/i.test(rawUrl) ? rawUrl : '';\n\nconst row = (label, value) =>\n  `<tr><td style=\"padding:6px 16px 6px 0; vertical-align:top; color:#6b625a;\">${esc(label)}</td><td style=\"padding:6px 0;\">${esc(value)}</td></tr>`;\n\nconst html =\n  `<div style=\"font-family:Arial, Helvetica, sans-serif; color:#1f1a17; max-width:640px;\">` +\n  `<h2 style=\"margin:0 0 12px; color:#991b1b;\">An automation failed</h2>` +\n  `<p style=\"margin:0 0 8px;\">A workflow stopped on an error that nothing handled, so work may not have finished.</p>` +\n  `<p style=\"margin:0 0 16px;\"><strong>Open the execution in n8n now. For the intake workflow, the failed execution still holds the original customer submission, and n8n deletes it after the retention period.</strong></p>` +\n  `<table style=\"border-collapse:collapse; font-size:14px;\">` +\n  row('Workflow', workflowName) +\n  row('Failed node', failedNode) +\n  (executionId ? row('Execution', executionId) : '') +\n  (mode ? row('Mode', mode) : '') +\n  (errorText ? row('Error', errorText) : '') +\n  (url ? row('Open in n8n', url) : '') +\n  `</table>` +\n  `<p style=\"margin-top:20px; font-size:11px; color:#9a9086;\">No customer details are included in this message. Generated automatically by the AI Support Desk.</p></div>`;\n\nconst subject = `🚨 Automation failed: ${workflowName} (${failedNode})`.slice(0, 160);\nreturn [{ json: { subject, html } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        0
+      ],
+      "id": "e1000000-0000-4000-8000-000000000002",
+      "name": "Prepare alert"
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $('Alert config').first().json.alertInbox }}",
+        "subject": "={{ $json.subject }}",
+        "message": "={{ $json.html }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        720,
+        0
+      ],
+      "id": "e1000000-0000-4000-8000-000000000003",
+      "name": "Send failure alert",
+      "credentials": {
+        "gmailOAuth2": {
+          "name": "Gmail account"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Alert config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alert config": {
+      "main": [
+        [
+          {
+            "node": "Prepare alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare alert": {
+      "main": [
+        [
+          {
+            "node": "Send failure alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataSuccessExecution": "none",
+    "saveDataErrorExecution": "all",
+    "saveManualExecutions": false,
+    "saveExecutionProgress": false
+  },
+  "tags": []
+}

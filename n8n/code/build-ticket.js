@@ -49,7 +49,13 @@ const canon = (map, v) =>
 
 function modelObject(nodeName) {
   try {
-    const raw = $(nodeName).first().json?.content?.parts?.[0]?.text;
+    // The model's answer is every plain text part of the first candidate, joined (the n8n Gemini node returns one
+    // item per candidate). Reasoning ("thought") parts and parts without text are never part of the answer, so a
+    // model that splits its output or adds a leading non-text part still parses. Anything else fails safe.
+    const parts = $(nodeName).first().json?.content?.parts;
+    const raw = Array.isArray(parts)
+      ? parts.filter((x) => x && x.thought !== true && typeof x.text === 'string').map((x) => x.text).join('')
+      : undefined;
     if (typeof raw !== 'string' || !raw.trim()) return null;
     const cleaned = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
     const obj = JSON.parse(cleaned);

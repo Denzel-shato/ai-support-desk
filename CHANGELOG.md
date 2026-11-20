@@ -1,5 +1,15 @@
 # Changelog
 
+## Operational readiness (audit findings B6, B8, B9, B10)
+
+Reconciled with B1-B5 on `main` (`acf95bb`); no logic of those was reimplemented. Nothing here was run on a real n8n, Firebase or Gemini; see the docs for what stays manual.
+
+- **B6 (TTL): disproven at code level, not verified live.** n8n 2.47.7's Firestore node turns strict ISO-8601 strings into Timestamps, and all four `rate_limits` writers (`Claim slot`, `Claim rescue slot`, `Record held submission`, `Record failed notification`) emit canonical UTC strings. Tests cover every writer's columns, format and lifetimes through a port of the node's serialiser. New read-only operator check `npm run ttl:check` reports the real stored type. The exact policy (`rate_limits` / `expireAt`) is documented.
+- **B8 (failure handling): confirmed, fixed.** Five Code nodes after "submitted" now have error outputs into the rescue email (new kind `notification_failed`); new `ai-support-desk-failure-alert.json` (Error Trigger, `Alert config` with B2's validator and placeholder, sanitised alert with no customer data). Execution-data settings are explicit. **Finding:** B5's suppressed rescue submissions live only in a "successful" execution, so successful executions must **not** be disabled; B2's doc advice to consider that was corrected. Manual setup, retention, backup and recovery: `docs/n8n-failure-alerts.md`.
+- **B9 (proxy IP): confirmed limitation, defensive parsing added.** Direct access to n8n lets a client choose its IP (infrastructure fix only; documented with a verification procedure). `Prepare rate limit` now handles ports, brackets, IPv4-mapped IPv6 and rejects private/reserved/multicast/IPv4-compatible/oversized/stuffed values. The hop count default (1) is unchanged because it depends on your topology. Limits and B4 slot ownership untouched.
+- **B10 (Gemini): confirmed.** `gemini-3-flash-preview` (preview, deprecated with a named replacement) became `gemini-3.6-flash` (stable) in the evaluation node. `gemini-3.1-flash-lite` (stable, earliest shutdown 2027-05-07) is unchanged on purpose; a deadline tripwire test and a smoke-test procedure are documented. `Build ticket` now joins all text parts of a response and ignores thought parts.
+- Tests: `tests/operational-readiness.test.ts`; graph assertions in older tests updated for the new error outputs and B5's nodes; B2's placeholder inventory now allows the alert workflow's own inbox placeholder.
+
 ## Rate limiter starvation and rescue-email flooding (audit findings B4 + B5)
 
 - **B4:** claims are now IP/unknown, email, then global **last**; every slot carries a per-submission `claimId`; on refusal the held slots are released only after reading them and confirming the `claimId` (Firestore delete has no precondition). Refused submissions no longer consume global capacity, other requests' slots can never be released, atomic `create` is unchanged, a failed release only makes the limiter stricter. Limits, windows, messages and fail-closed behaviour are unchanged.

@@ -192,9 +192,10 @@ test("no email is reachable unless the ticket was written (or proven to be this 
   }
   assert.deepEqual(targets("Duplicate submission (stop)"), [], "a duplicate sends nothing");
   // The ONLY ways into the rescue email: Create failure/unclear conflict, a notification email failing,
-  // or the rate limiter being unavailable (fail-closed).
+  // the rate limiter being unavailable (fail-closed), or a Code node failing AFTER the visitor was told
+  // "submitted" (their error outputs; see tests/operational-readiness.test.ts).
   const into = Object.entries(conn).filter(([, c]) => c.main.some((b) => b.some((x) => x.node === "Prepare rescue email"))).map(([n]) => n).sort();
-  assert.deepEqual(into, ["Is duplicate submission", "Is write conflict", "Rescue suppressed?", "Send a message", "Send a message1"]);
+  assert.deepEqual(into, ["Build ticket", "Check existing ticket", "Classify create error", "Is duplicate submission", "Is write conflict", "Prepare email fields", "Rescue suppressed?", "Select active articles", "Send a message", "Send a message1"]);
 });
 
 test("rescue email goes to the same staff inbox as escalations, without n8n attribution", () => {

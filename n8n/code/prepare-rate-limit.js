@@ -69,41 +69,73 @@ function sha256Hex(text) {
 const num = (v, lo, hi, dflt) => (Number.isFinite(Number(v)) ? Math.min(hi, Math.max(lo, Math.floor(Number(v)))) : dflt);
 
 // ---- trusted client IP (or null)
+// Only the entry that YOUR proxy wrote is used (see `ipSource` in 'Rate limit settings'). Anything that is not a plausible
+// public client address (malformed, private, loopback, link-local, multicast/reserved, unspecified) yields null, which is
+// counted in the shared "unknown" bucket instead of being trusted or silently dropped.
 const IPV4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
+function publicV4(o) {
+  if (o.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return null;
+  const [a, b] = o;
+  // "This network", private, loopback, link-local, CGNAT, multicast and reserved ranges are never a real client: a proxy
+  // that reports one is misconfigured, so the source is treated as unknown instead of sharing one bucket per address.
+  if (a === 0 || a === 10 || a === 127 || a >= 224 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127)) return null;
+  return o.join('.');
+}
 function cleanIp(raw) {
-  const s = String(raw ?? '').trim().replace(/^\[|\]$/g, '');
-  const m = IPV4.exec(s);
-  if (m) {
-    const o = m.slice(1).map(Number);
+  let s = String(raw ?? '').trim();
+  if (!s || s.length > 64) return null;
+  // Proxies such as IIS/Azure append a port: "1.2.3.4:5678" and "[2001:db8::1]:443". Unbracketed IPv6 is never split.
+  const bracket = /^\[([0-9a-f:.]+)\](?::\d{1,5})?$/i.exec(s);
+  if (bracket) s = bracket[1];
+  else {
+    const withPort = /^(\d{1,3}(?:\.\d{1,3}){3}):\d{1,5}$/.exec(s);
+    if (withPort) s = withPort[1];
+  }
+  const m4 = IPV4.exec(s);
+  if (m4) return publicV4(m4.slice(1).map(Number));
+  const lower = s.toLowerCase();
+  if (!/^[0-9a-f:.]+$/.test(lower) || !lower.includes(':') || lower.includes(':::')) return null;
+  let work = lower;
+  if (work.includes('.')) {
+    // A dotted-quad tail (::ffff:1.2.3.4) is rewritten as two hex groups so the address can be expanded uniformly.
+    const i = work.lastIndexOf(':');
+    const tail = IPV4.exec(work.slice(i + 1));
+    if (!tail) return null;
+    const o = tail.slice(1).map(Number);
     if (o.some((n) => n > 255)) return null;
-    const [a, b] = o;
-    // Private, loopback, link-local, CGNAT and "this network" are never a real client: a proxy that
-    // reports one is misconfigured, so the source is treated as unknown instead of sharing a bucket.
-    if (a === 10 || a === 127 || a === 0 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127)) return null;
-    return o.join('.');
+    work = `${work.slice(0, i + 1)}${((o[0] << 8) | o[1]).toString(16)}:${((o[2] << 8) | o[3]).toString(16)}`;
   }
-  if (/^[0-9a-f:.]+$/i.test(s) && s.includes(':') && !s.includes(':::')) {
-    const lower = s.toLowerCase();
-    if (lower === '::' || lower === '::1' || /^f[cd]/.test(lower) || /^fe[89ab]/.test(lower)) return null;
-    const halves = lower.split('::');
-    if (halves.length > 2) return null;
-    const left = halves[0] ? halves[0].split(':') : [];
-    const right = halves.length === 2 && halves[1] ? halves[1].split(':') : [];
-    const missing = 8 - left.length - right.length;
-    if ((halves.length === 1 && missing !== 0) || missing < 0) return null;
-    const groups = [...left, ...Array(halves.length === 2 ? missing : 0).fill('0'), ...right];
-    if (groups.length !== 8 || groups.some((g) => !/^[0-9a-f]{1,4}$/.test(g))) return null;
-    return groups.slice(0, 4).map((g) => g.padStart(4, '0')).join(':') + '::/64';
-  }
-  return null;
+  const halves = work.split('::');
+  if (halves.length > 2) return null;
+  const left = halves[0] ? halves[0].split(':') : [];
+  const right = halves.length === 2 && halves[1] ? halves[1].split(':') : [];
+  const missing = 8 - left.length - right.length;
+  if ((halves.length === 1 && missing !== 0) || missing < 0 || (halves.length === 2 && missing < 1)) return null;
+  const groups = [...left, ...Array(halves.length === 2 ? missing : 0).fill('0'), ...right];
+  if (groups.length !== 8 || groups.some((g) => !/^[0-9a-f]{1,4}$/.test(g))) return null;
+  const n = groups.map((g) => parseInt(g, 16));
+  // IPv4-mapped (::ffff:a.b.c.d, also written ::ffff:7f00:1): judge the embedded IPv4 address by the IPv4 rules.
+  if (n.slice(0, 5).every((g) => g === 0) && n[5] === 0xffff) return publicV4([n[6] >> 8, n[6] & 255, n[7] >> 8, n[7] & 255]);
+  // ::, ::1 and the deprecated IPv4-compatible ::a.b.c.d
+  if (n.slice(0, 6).every((g) => g === 0)) return null;
+  const first = n[0];
+  if ((first & 0xfe00) === 0xfc00) return null; // fc00::/7 unique-local
+  if ((first & 0xffc0) === 0xfe80) return null; // fe80::/10 link-local
+  if ((first & 0xffc0) === 0xfec0) return null; // fec0::/10 site-local (deprecated)
+  if ((first & 0xff00) === 0xff00) return null; // ff00::/8 multicast
+  // One household or site usually holds a whole /64, so the limiter keys on that prefix.
+  return n.slice(0, 4).map((g) => g.toString(16).padStart(4, '0')).join(':') + '::/64';
 }
 function sourceIp() {
   const header = String(S.ipSource?.header ?? '').toLowerCase().trim();
   if (!header) return null;
   const headers = form.headers && typeof form.headers === 'object' ? form.headers : {};
-  const value = headers[header];
-  if (typeof value !== 'string' || !value.trim()) return null;
+  const raw = headers[header];
+  const value = Array.isArray(raw) ? raw.join(',') : raw;
+  if (typeof value !== 'string' || !value.trim() || value.length > 512) return null;
   const parts = value.split(',').map((p) => p.trim()).filter(Boolean);
+  // A real proxy chain is short. A long list is a client stuffing the header, so none of it is trusted.
+  if (parts.length > 20) return null;
   const hops = num(S.ipSource?.trustedProxyHops, 1, 10, 1);
   if (parts.length < hops) return null; // fewer entries than trusted proxies: cannot be ours
   return cleanIp(parts[parts.length - hops]);

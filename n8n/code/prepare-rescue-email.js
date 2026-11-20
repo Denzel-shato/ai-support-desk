@@ -11,8 +11,13 @@
 //   acknowledgement_failed  ticket saved; the customer's acknowledgement email failed
 //   escalation_failed       ticket saved; the staff escalation email failed
 //   rate_limit_unavailable  the spam-protection store failed (fail-closed): the submission was refused, no ticket
+//   notification_failed     ticket saved; the step that prepares the notification emails failed, so nothing was sent
 //   rate_limit_suppressed   the notice sent ONCE per window when the cap on rate_limit_unavailable emails is reached
 //                           (contains no customer data)
+//
+// A Code node that fails after the visitor was told "submitted" (Select active articles, Build ticket, Prepare email
+// fields, and the two duplicate-handling nodes) also ends here through its error output, so no submission depends
+// on a failed execution being noticed.
 const esc = (v) =>
   String(v ?? '')
     .replace(/&/g, '&amp;')
@@ -49,6 +54,7 @@ else if (input.route === 'unclear') kind = 'ticket_unclear';
 else if (input.kind === 'failure') kind = 'ticket_not_saved';
 else if (ran('Send a message1')) kind = 'acknowledgement_failed';
 else if (ran('Send a message')) kind = 'escalation_failed';
+else if (ran('Create a document')) kind = 'notification_failed';
 else kind = 'ticket_not_saved';
 
 const TEXT = {
@@ -76,6 +82,11 @@ const TEXT = {
     label: 'Customer acknowledgement failed',
     what: 'The ticket was saved, but the acknowledgement email to the customer could not be sent.',
     todo: 'The ticket is in the dashboard. Consider replying to the customer yourself.',
+  },
+  notification_failed: {
+    label: 'Ticket saved, notification failed',
+    what: 'The ticket was saved, but the step that prepares the notification emails failed, so no email was sent to the customer or to staff.',
+    todo: 'The ticket is in the dashboard. Please review it now and reply to the customer yourself.',
   },
   escalation_failed: {
     label: 'Escalation email failed',
