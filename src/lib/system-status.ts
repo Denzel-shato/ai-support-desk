@@ -4,9 +4,10 @@ import type { Firestore } from "firebase-admin/firestore";
 import packageJson from "../../package.json";
 import { FirebaseConfigError, getAdminDb } from "./firebase-admin";
 import { MAX_ARTICLES } from "./firestore-knowledge-base";
-import { MAX_TICKETS, TICKETS_COLLECTION, withTimeout } from "./firestore-tickets";
+import { TICKETS_COLLECTION, withTimeout } from "./firestore-tickets";
 import { KNOWLEDGE_COLLECTION } from "./knowledge-base";
 import { readWebhookConfig, WEBHOOK_SECRET_ENV } from "./n8n-send-response";
+import { PAGE_SIZE_MAX } from "./ticket-list-query";
 import { toIsoOrNull } from "./ticket-serialization";
 import type { Check, StatusFacts } from "./settings-status";
 
@@ -120,6 +121,6 @@ export async function gatherStatusFacts(
       nodeVersion: process.version,
       nodeEnv: env.NODE_ENV ?? "unknown",
     },
-    limits: { tickets: MAX_TICKETS, articles: MAX_ARTICLES },
+    limits: { tickets: PAGE_SIZE_MAX, articles: MAX_ARTICLES },
   };
 }

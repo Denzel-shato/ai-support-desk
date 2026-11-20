@@ -25,6 +25,7 @@ const routes: [string, string, () => Promise<{ default?: never } & Record<string
   ["settings", "PUT", () => import("@/app/api/settings/route"), "PUT"],
   ["settings/status", "GET", () => import("@/app/api/settings/status/route"), "GET"],
   ["auth/session", "GET", () => import("@/app/api/auth/session/route"), "GET"],
+  ["overview", "GET", () => import("@/app/api/overview/route"), "GET"],
 ];
 
 test("every API route file is in the unauthenticated-rejection list (a new route can't ship unprotected unnoticed)", async () => {

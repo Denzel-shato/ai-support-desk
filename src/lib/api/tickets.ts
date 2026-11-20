@@ -1,4 +1,4 @@
-import type { ApiErrorBody, SupportTicketRecord } from "@/lib/types";
+import type { ApiErrorBody, SupportTicketRecord, TicketStats } from "@/lib/types";
 
 /**
  * Browser-side client for GET /api/tickets. Pure fetching: no React and no
@@ -10,6 +10,8 @@ export type TicketsErrorCode =
   | "invalid_response"
   | "ticket_not_found"
   | "invalid_ticket_id"
+  | "invalid_cursor"
+  | "invalid_query"
   | "firebase_not_configured"
   | "firestore_timeout"
   | "firestore_permission_denied"
@@ -109,19 +111,61 @@ export async function requestJson(
   };
 }
 
-export async function fetchTickets(
+/** One page of tickets as returned by GET /api/tickets (see lib/firestore-ticket-pages.ts). */
+export interface TicketPageResponse {
+  tickets: SupportTicketRecord[];
+  nextCursor: string | null;
+  hasMore: boolean;
+  scanLimited: boolean;
+  /** First page only. */
+  total?: number;
+  unlisted?: number;
+}
+
+/** What GET /api/overview returns: aggregates over every ticket plus the newest few. */
+export interface OverviewStatsResponse {
+  stats: TicketStats;
+  recent: SupportTicketRecord[];
+  scanned: number;
+  /** The server's read ceiling cut the scan short: the figures are a lower bound. */
+  partial: boolean;
+  computedAt: string;
+  timeZone: string;
+}
+
+function invalidResponse(status: number): TicketsApiError {
+  return new TicketsApiError("The server returned data in an unexpected format.", {
+    code: "invalid_response",
+    status,
+  });
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export async function fetchTicketPage(
+  params: URLSearchParams,
   signal?: AbortSignal,
-): Promise<{ tickets: SupportTicketRecord[]; truncated: boolean }> {
-  const { body, status, truncated } = await requestJson("/api/tickets", signal);
-
-  if (!Array.isArray(body)) {
-    throw new TicketsApiError("The server returned data in an unexpected format.", {
-      code: "invalid_response",
-      status,
-    });
+): Promise<TicketPageResponse> {
+  const { body, status } = await requestJson(`/api/tickets?${params.toString()}`, signal);
+  if (!isObject(body) || !Array.isArray(body.tickets) || typeof body.hasMore !== "boolean") {
+    throw invalidResponse(status);
   }
+  return body as unknown as TicketPageResponse;
+}
 
-  return { tickets: body as SupportTicketRecord[], truncated };
+export async function fetchOverviewStats(
+  timeZone: string,
+  options: { fresh?: boolean; signal?: AbortSignal } = {},
+): Promise<OverviewStatsResponse> {
+  const params = new URLSearchParams({ tz: timeZone });
+  if (options.fresh) params.set("fresh", "1");
+  const { body, status } = await requestJson(`/api/overview?${params.toString()}`, options.signal);
+  if (!isObject(body) || !isObject(body.stats) || !Array.isArray(body.recent)) {
+    throw invalidResponse(status);
+  }
+  return body as unknown as OverviewStatsResponse;
 }
 
 /** Fetches one ticket by Firestore document ID. 404s surface as `ticket_not_found`. */

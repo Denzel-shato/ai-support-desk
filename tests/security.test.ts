@@ -59,7 +59,7 @@ test("credentials that are not the configured admin are rejected on every privil
       "empty cookie": `${SESSION_COOKIE}=`,
     };
     for (const [label, c] of Object.entries(bad)) {
-      for (const [name, method, load, body] of [...idRoutes, ["kb create", "POST", () => import("@/app/api/knowledge-base/route"), mutating[5][3]] as any, ["tickets", "GET", () => import("@/app/api/tickets/route"), undefined] as any, ["kb list", "GET", () => import("@/app/api/knowledge-base/route"), undefined] as any, ["status", "GET", () => import("@/app/api/settings/status/route"), undefined] as any]) {
+      for (const [name, method, load, body] of [...idRoutes, ["kb create", "POST", () => import("@/app/api/knowledge-base/route"), mutating[5][3]] as any, ["tickets", "GET", () => import("@/app/api/tickets/route"), undefined] as any, ["kb list", "GET", () => import("@/app/api/knowledge-base/route"), undefined] as any, ["status", "GET", () => import("@/app/api/settings/status/route"), undefined] as any, ["overview", "GET", () => import("@/app/api/overview/route"), undefined] as any]) {
         const res: Response = await (await load())[method](call(method, { cookie: c }, body), ctx("t1"));
         assert.equal(res.status, 401, `${label}: ${method} ${name} answered ${res.status}`);
       }

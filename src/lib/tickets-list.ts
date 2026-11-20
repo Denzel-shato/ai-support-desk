@@ -88,6 +88,18 @@ function createdMs(row: Ticket): number | null {
   return Number.isNaN(ms) ? null : ms;
 }
 
+/** Does one indexed ticket pass search, priority, category and status? (Also used server-side.) */
+export function matchesFilters(
+  { row, haystack }: IndexedTicket,
+  filters: TicketFilters,
+): boolean {
+  if (filters.priority !== "all" && row.priority !== filters.priority) return false;
+  if (filters.category !== "all" && row.category !== filters.category) return false;
+  if (filters.status !== "all" && row.status !== filters.status) return false;
+  const search = filters.search.trim();
+  return search === "" || matchesSearch(haystack, search);
+}
+
 /**
  * Applies search, priority, category and status together (all must match),
  * then sorts by creation date. Tickets without a usable date always sort last
@@ -97,22 +109,10 @@ export function applyFilters(
   indexed: IndexedTicket[],
   filters: TicketFilters,
 ): Ticket[] {
-  const search = filters.search.trim();
   const direction = filters.sort === "newest" ? -1 : 1;
 
   return indexed
-    .filter(({ row, haystack }) => {
-      if (filters.priority !== "all" && row.priority !== filters.priority) {
-        return false;
-      }
-      if (filters.category !== "all" && row.category !== filters.category) {
-        return false;
-      }
-      if (filters.status !== "all" && row.status !== filters.status) {
-        return false;
-      }
-      return search === "" || matchesSearch(haystack, search);
-    })
+    .filter((entry) => matchesFilters(entry, filters))
     .map(({ row }) => row)
     .sort((a, b) => {
       const aMs = createdMs(a);

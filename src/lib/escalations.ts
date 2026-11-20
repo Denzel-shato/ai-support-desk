@@ -9,7 +9,7 @@ import {
 } from "./overview";
 import { cleanText, humanizeValue } from "./ticket-detail";
 import type { SortOrder } from "./tickets-list";
-import type { Metric, Priority, SupportTicketRecord, TicketStatus } from "./types";
+import type { Metric, Priority, SupportTicketRecord, TicketStats, TicketStatus } from "./types";
 
 /**
  * Pure logic for the Escalations page. No React and no fetching: it works on
@@ -166,25 +166,27 @@ function escalatedMs(row: EscalationRow): number | null {
  * sorted by escalation date. Rows without a usable `escalatedAt` always sort
  * last; their date is not guessed from any other field.
  */
+/** Does one indexed escalation pass search, priority, category and status? (Also used server-side.) */
+export function matchesEscalationFilters(
+  { row, haystack }: IndexedEscalation,
+  filters: EscalationFilters,
+): boolean {
+  if (filters.priority !== "all" && row.priority !== filters.priority) return false;
+  if (filters.category !== "all" && row.category !== filters.category) return false;
+  if (filters.status === "active" && row.resolved) return false;
+  if (filters.status === "resolved" && !row.resolved) return false;
+  const search = filters.search.trim();
+  return search === "" || matchesSearch(haystack, search);
+}
+
 export function applyEscalationFilters(
   indexed: IndexedEscalation[],
   filters: EscalationFilters,
 ): EscalationRow[] {
-  const search = filters.search.trim();
   const direction = filters.sort === "newest" ? -1 : 1;
 
   return indexed
-    .filter(({ row, haystack }) => {
-      if (filters.priority !== "all" && row.priority !== filters.priority) {
-        return false;
-      }
-      if (filters.category !== "all" && row.category !== filters.category) {
-        return false;
-      }
-      if (filters.status === "active" && row.resolved) return false;
-      if (filters.status === "resolved" && !row.resolved) return false;
-      return search === "" || matchesSearch(haystack, search);
-    })
+    .filter((entry) => matchesEscalationFilters(entry, filters))
     .map(({ row }) => row)
     .sort((a, b) => {
       const aMs = escalatedMs(a);
@@ -217,44 +219,71 @@ function percent(count: number, total: number, of: string): string {
  * resolved from its detail page stops counting in them straight away, while
  * its escalation record stays in the total and in the table.
  */
-export function buildEscalationMetrics(
-  allTicketCount: number,
-  escalated: SupportTicketRecord[],
-): Metric[] {
-  const total = escalated.length;
-  const active = escalated.filter(isActiveEscalation);
-  const urgent = active.filter((t) => normalizePriority(t.priority) === "urgent").length;
-  const high = active.filter((t) => normalizePriority(t.priority) === "high").length;
-  const awaiting = active.length;
+interface EscalationCounts {
+  /** Every ticket in the desk. */
+  allTickets: number;
+  /** Escalated at any point (history). */
+  everEscalated: number;
+  /** Escalated and not resolved (current). */
+  active: number;
+  activeUrgent: number;
+  activeHigh: number;
+}
 
+function escalationMetrics(c: EscalationCounts): Metric[] {
   return [
     {
       id: "escalations_total",
       label: "Escalated tickets",
       description: "Flagged for human handling, resolved or not",
-      value: total,
-      footer: percent(total, allTicketCount, "all tickets"),
+      value: c.everEscalated,
+      footer: percent(c.everEscalated, c.allTickets, "all tickets"),
     },
     {
       id: "escalations_urgent",
       label: "Urgent escalations",
       description: "Not yet resolved, urgent priority",
-      value: urgent,
-      footer: percent(urgent, awaiting, "active escalations"),
+      value: c.activeUrgent,
+      footer: percent(c.activeUrgent, c.active, "active escalations"),
     },
     {
       id: "escalations_high",
       label: "High-priority escalations",
       description: "Not yet resolved, high priority",
-      value: high,
-      footer: percent(high, awaiting, "active escalations"),
+      value: c.activeHigh,
+      footer: percent(c.activeHigh, c.active, "active escalations"),
     },
     {
       id: "escalations_awaiting_attention",
       label: "Awaiting attention",
       description: "Escalated and not yet resolved",
-      value: awaiting,
-      footer: percent(awaiting, total, "escalations"),
+      value: c.active,
+      footer: percent(c.active, c.everEscalated, "escalations"),
     },
   ];
+}
+
+/** The four cards from aggregate stats over every ticket (not just a loaded page). */
+export function escalationMetricsFromStats(stats: TicketStats): Metric[] {
+  return escalationMetrics({
+    allTickets: stats.total,
+    everEscalated: stats.everEscalated,
+    active: stats.activeEscalations,
+    activeUrgent: stats.activeUrgent,
+    activeHigh: stats.activeHigh,
+  });
+}
+
+export function buildEscalationMetrics(
+  allTicketCount: number,
+  escalated: SupportTicketRecord[],
+): Metric[] {
+  const active = escalated.filter(isActiveEscalation);
+  return escalationMetrics({
+    allTickets: allTicketCount,
+    everEscalated: escalated.length,
+    active: active.length,
+    activeUrgent: active.filter((t) => normalizePriority(t.priority) === "urgent").length,
+    activeHigh: active.filter((t) => normalizePriority(t.priority) === "high").length,
+  });
 }

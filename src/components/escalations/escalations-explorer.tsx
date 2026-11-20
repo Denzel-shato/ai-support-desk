@@ -17,17 +17,16 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { TruncationNotice } from "@/components/ui/truncation-notice";
-import { MAX_TICKETS } from "@/lib/limits";
-import { useTickets } from "@/hooks/use-tickets";
+import { LoadMore } from "@/components/ui/load-more";
+import { DataNotice } from "@/components/ui/truncation-notice";
+import { useOverviewStats } from "@/hooks/use-overview-stats";
+import { useTicketPages } from "@/hooks/use-ticket-pages";
 import {
-  applyEscalationFilters,
-  buildEscalationMetrics,
   DEFAULT_ESCALATION_FILTERS,
   escalationCategoryOptions,
+  escalationMetricsFromStats,
   hasActiveEscalationFilters,
   indexEscalations,
-  selectEscalated,
   type EscalationFilters,
 } from "@/lib/escalations";
 import { EscalationFiltersBar } from "./escalation-filters";
@@ -36,45 +35,46 @@ import { EscalationsTable } from "./escalations-table";
 
 export function EscalationsExplorer() {
   const { timeZone } = useDashboardSettings().settings;
-  const { tickets, error, loading, refreshing, updatedAt, truncated, refresh } =
-    useTickets();
   const [filters, setFilters] = useState<EscalationFilters>(
     DEFAULT_ESCALATION_FILTERS,
   );
 
-  // Escalations come from the same /api/tickets data as every other page.
-  const escalated = useMemo(
-    () => (tickets ? selectEscalated(tickets) : null),
-    [tickets],
-  );
+  // The list is paged and filtered on the server (escalated tickets only); the four
+  // metric cards come from aggregates over every ticket, not from the loaded rows.
+  const list = useTicketPages("escalations", filters);
+  const overview = useOverviewStats();
+  const { tickets, updatedAt, loadMoreError, loadingMore, hasMore, scanLimited } = list;
+  const loading = list.loading || overview.loading;
+  const error = list.error ?? overview.error;
+  const refreshing = list.refreshing || overview.refreshing;
+  const refresh = () => {
+    list.refresh();
+    overview.refresh();
+  };
 
   const indexed = useMemo(
-    () => (escalated && updatedAt ? indexEscalations(escalated, updatedAt) : null),
-    [escalated, updatedAt],
+    () => (tickets && updatedAt ? indexEscalations(tickets, updatedAt) : null),
+    [tickets, updatedAt],
   );
 
-  const metrics = useMemo(
-    () =>
-      tickets && escalated ? buildEscalationMetrics(tickets.length, escalated) : null,
-    [tickets, escalated],
-  );
+  const stats = overview.data?.stats ?? null;
+  const metrics = useMemo(() => (stats ? escalationMetricsFromStats(stats) : null), [stats]);
 
   const categories = useMemo(() => {
     const found = indexed ? escalationCategoryOptions(indexed) : [];
-    // Keep the selected category listed even if a refresh removed it.
+    // Keep the selected category listed even if the loaded pages do not include it.
     return filters.category !== "all" && !found.includes(filters.category)
       ? [...found, filters.category].sort((a, b) => a.localeCompare(b))
       : found;
   }, [indexed, filters.category]);
 
-  const results = useMemo(
-    () => (indexed ? applyEscalationFilters(indexed, filters) : []),
-    [indexed, filters],
-  );
+  const results = useMemo(() => (indexed ? indexed.map((i) => i.row) : []), [indexed]);
 
-  const total = indexed?.length ?? 0;
+  const allTickets = stats?.total ?? 0;
+  const everEscalated = stats?.everEscalated ?? 0;
   const clear = () => setFilters(DEFAULT_ESCALATION_FILTERS);
-  const noTickets = tickets !== null && tickets.length === 0;
+  const noTickets = !!stats && stats.total === 0;
+  const noEscalations = !!stats && everEscalated === 0 && !hasActiveEscalationFilters(filters);
 
   return (
     <div className="space-y-5">
@@ -101,17 +101,21 @@ export function EscalationsExplorer() {
         </div>
       </section>
 
-      {truncated && <TruncationNotice noun="tickets" limit={MAX_TICKETS} />}
+      {overview.data?.partial && (
+        <DataNotice>
+          This desk has more tickets than the dashboard will count in one pass, so the figures above are a lower bound.
+        </DataNotice>
+      )}
 
       {loading && <EscalationsSkeleton />}
 
-      {!loading && !tickets && error && (
+      {!loading && (!tickets || !stats) && error && (
         <OverviewError error={error} onRetry={refresh} retrying={refreshing} />
       )}
 
-      {noTickets && <OverviewEmpty onRefresh={refresh} refreshing={refreshing} />}
+      {tickets && noTickets && <OverviewEmpty onRefresh={refresh} refreshing={refreshing} />}
 
-      {tickets && !noTickets && total === 0 && (
+      {tickets && stats && !noTickets && noEscalations && (
         <div className="flex min-h-[420px] items-center justify-center rounded-lg border border-border bg-surface p-8">
           <div className="max-w-md text-center">
             <span className="mx-auto flex size-9 items-center justify-center rounded-md border border-border bg-surface-muted text-muted-foreground">
@@ -120,7 +124,7 @@ export function EscalationsExplorer() {
             <h2 className="mt-3 text-sm font-semibold">No escalations right now</h2>
             <div className="mt-1 space-y-2 text-[13px] text-muted-foreground">
               <p>
-                None of the {tickets.length.toLocaleString("en-US")} tickets is
+                None of the {allTickets.toLocaleString("en-US")} tickets is
                 marked as needing escalation.
               </p>
               <p>
@@ -138,7 +142,7 @@ export function EscalationsExplorer() {
         </div>
       )}
 
-      {indexed && metrics && total > 0 && (
+      {indexed && metrics && !noTickets && !noEscalations && (
         <>
           {error && <RefreshFailedNotice error={error} updatedAt={updatedAt} />}
 
@@ -157,8 +161,8 @@ export function EscalationsExplorer() {
                 <CardTitle>Escalated tickets</CardTitle>
                 <CardDescription aria-live="polite">
                   {hasActiveEscalationFilters(filters)
-                    ? `Showing ${results.length.toLocaleString("en-US")} of ${total.toLocaleString("en-US")} escalations`
-                    : `${total.toLocaleString("en-US")} ${total === 1 ? "escalation" : "escalations"}`}
+                    ? `Showing ${results.length.toLocaleString("en-US")} matching ${results.length === 1 ? "escalation" : "escalations"}${hasMore ? " so far" : ""}`
+                    : `Showing ${results.length.toLocaleString("en-US")} of ${everEscalated.toLocaleString("en-US")} ${everEscalated === 1 ? "escalation" : "escalations"}`}
                 </CardDescription>
               </div>
             </CardHeader>
@@ -172,7 +176,7 @@ export function EscalationsExplorer() {
 
             {results.length > 0 ? (
               <EscalationsTable rows={results} />
-            ) : (
+            ) : hasMore ? null : (
               <div className="flex flex-col items-center border-t border-border px-6 py-14 text-center">
                 <span className="flex size-9 items-center justify-center rounded-md border border-border bg-surface-muted text-muted-foreground">
                   <SearchX className="size-4" aria-hidden />
@@ -182,13 +186,21 @@ export function EscalationsExplorer() {
                 </h3>
                 <p className="mt-1 max-w-sm text-[13px] text-muted-foreground">
                   Try a different search term, or remove a filter to see all{" "}
-                  {total.toLocaleString("en-US")} escalations.
+                  {everEscalated.toLocaleString("en-US")} escalations.
                 </p>
                 <Button variant="outline" className="mt-4" onClick={clear}>
                   Clear filters
                 </Button>
               </div>
             )}
+
+            <LoadMore
+              hasMore={hasMore}
+              loading={loadingMore}
+              error={loadMoreError?.message ?? null}
+              scanLimited={scanLimited}
+              onLoadMore={list.loadMore}
+            />
           </Card>
         </>
       )}

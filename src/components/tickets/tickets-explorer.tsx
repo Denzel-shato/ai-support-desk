@@ -17,11 +17,10 @@ import {
   OverviewError,
   RefreshFailedNotice,
 } from "@/components/overview/overview-states";
-import { TruncationNotice } from "@/components/ui/truncation-notice";
-import { MAX_TICKETS } from "@/lib/limits";
-import { useTickets } from "@/hooks/use-tickets";
+import { LoadMore } from "@/components/ui/load-more";
+import { DataNotice } from "@/components/ui/truncation-notice";
+import { useTicketPages } from "@/hooks/use-ticket-pages";
 import {
-  applyFilters,
   categoryOptions,
   DEFAULT_FILTERS,
   hasActiveFilters,
@@ -33,12 +32,15 @@ import { TicketsSkeleton } from "./tickets-skeleton";
 import { TicketsTable } from "./tickets-table";
 
 export function TicketsExplorer() {
-  const { tickets, error, loading, refreshing, updatedAt, truncated, refresh } =
-    useTickets();
   const { settings } = useDashboardSettings();
   const { timeZone } = settings;
   const urlSearch = (useSearchParams().get("q") ?? "").slice(0, 200);
   const [filters, setFilters] = useState<TicketFilters>({ ...DEFAULT_FILTERS, search: urlSearch });
+  // Search, filters and sort run on the server; this page holds only the pages loaded so far.
+  const {
+    tickets, error, loadMoreError, loading, refreshing, loadingMore, updatedAt,
+    hasMore, scanLimited, total: allTickets, unlisted, refresh, loadMore,
+  } = useTicketPages("tickets", filters);
   const sortTouched = useRef(false);
 
   // The saved default sort applies when it arrives, unless the user already picked an order here.
@@ -66,26 +68,22 @@ export function TicketsExplorer() {
     window.history.replaceState(window.history.state, "", url);
   }, [filters.search]);
 
-  // Index once per fetch; filtering below only re-runs the cheap part.
+  // Rows for the loaded pages (relative times are computed once per fetch).
   const indexed = useMemo(
     () => (tickets && updatedAt ? indexTickets(tickets, updatedAt) : null),
     [tickets, updatedAt],
   );
+  const results = useMemo(() => (indexed ? indexed.map((i) => i.row) : []), [indexed]);
 
   const categories = useMemo(() => {
     const found = indexed ? categoryOptions(indexed) : [];
-    // Keep the selected category in the list even if a refresh removed it.
+    // Keep the selected category in the list even if the loaded pages do not include it.
     return filters.category !== "all" && !found.includes(filters.category)
       ? [...found, filters.category].sort((a, b) => a.localeCompare(b))
       : found;
   }, [indexed, filters.category]);
 
-  const results = useMemo(
-    () => (indexed ? applyFilters(indexed, filters) : []),
-    [indexed, filters],
-  );
-
-  const total = indexed?.length ?? 0;
+  const total = allTickets ?? 0;
   const clear = () => setFilters({ ...DEFAULT_FILTERS, sort: settings.defaultSort });
 
   return (
@@ -112,7 +110,13 @@ export function TicketsExplorer() {
         </div>
       </section>
 
-      {truncated && <TruncationNotice noun="tickets" limit={MAX_TICKETS} />}
+      {unlisted > 0 && (
+        <DataNotice>
+          {unlisted.toLocaleString("en-US")} {unlisted === 1 ? "ticket has" : "tickets have"} no
+          usable creation date, so {unlisted === 1 ? "it is" : "they are"} not listed here. They are
+          still counted on the Overview.
+        </DataNotice>
+      )}
 
       {loading && <TicketsSkeleton />}
 
@@ -134,8 +138,8 @@ export function TicketsExplorer() {
                 <CardTitle>Tickets</CardTitle>
                 <CardDescription aria-live="polite">
                   {hasActiveFilters(filters)
-                    ? `Showing ${results.length.toLocaleString("en-US")} of ${total.toLocaleString("en-US")} tickets`
-                    : `${total.toLocaleString("en-US")} ${total === 1 ? "ticket" : "tickets"}`}
+                    ? `Showing ${results.length.toLocaleString("en-US")} matching ${results.length === 1 ? "ticket" : "tickets"}${hasMore ? " so far" : ""}`
+                    : `Showing ${results.length.toLocaleString("en-US")} of ${total.toLocaleString("en-US")} tickets`}
                 </CardDescription>
               </div>
             </CardHeader>
@@ -152,7 +156,7 @@ export function TicketsExplorer() {
 
             {results.length > 0 ? (
               <TicketsTable tickets={results} />
-            ) : (
+            ) : hasMore ? null : (
               <div className="flex flex-col items-center border-t border-border px-6 py-14 text-center">
                 <span className="flex size-9 items-center justify-center rounded-md border border-border bg-surface-muted text-muted-foreground">
                   <SearchX className="size-4" aria-hidden />
@@ -169,6 +173,14 @@ export function TicketsExplorer() {
                 </Button>
               </div>
             )}
+
+            <LoadMore
+              hasMore={hasMore}
+              loading={loadingMore}
+              error={loadMoreError?.message ?? null}
+              scanLimited={scanLimited}
+              onLoadMore={loadMore}
+            />
           </Card>
         </>
       )}
